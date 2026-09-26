@@ -1,0 +1,5 @@
+name: flair-impact
+version: 0.1.0
+permissions:
+  - readsub
+  - modposts

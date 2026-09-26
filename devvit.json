@@ -1,0 +1,78 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "flair-impact",
+  "permissions": {
+    "redis": true,
+    "reddit": true
+  },
+  "settings": {
+    "subreddit": {
+      "publicDashboard": {
+        "type": "boolean",
+        "label": "Public Community Dashboard",
+        "helpText": "Allow all subreddit visitors to view the flair analytics dashboard. If disabled, only moderators can view the data.",
+        "defaultValue": true
+      },
+      "lookbackDays": {
+        "type": "number",
+        "label": "Lookback Period (Days)",
+        "helpText": "Number of days in the past to analyze (e.g. 30, 60, 90, 180). Default: 90",
+        "defaultValue": 90
+      },
+      "maxPosts": {
+        "type": "number",
+        "label": "Maximum Posts to Ingest",
+        "helpText": "Maximum posts to fetch (100 to 1000). Note: Reddit API listings enforce a strict 1,000 item ceiling. Default: 1000",
+        "defaultValue": 1000
+      },
+      "minPostsThreshold": {
+        "type": "number",
+        "label": "Minimum Posts for Highlights",
+        "helpText": "Minimum post count required for a flair to be eligible for Highest/Lowest Response ranking cards. Default: 5",
+        "defaultValue": 5
+      },
+      "customGroups": {
+        "type": "paragraph",
+        "label": "Custom Flair Groupings (Optional)",
+        "helpText": "Group flairs into categories. Enter one group per line in 'GroupName: flair1, flair2' format. Leave blank for no grouping.",
+        "placeholder": "Discussion: Question, Peer Help, Open Chat\nPromotions: Vendor, Showcase, Deals",
+        "defaultValue": ""
+      }
+    }
+  },
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": {
+      "default": {
+        "entry": "index.html",
+        "height": "tall"
+      }
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "scheduler": {
+    "tasks": {
+      "nightlySync": {
+        "endpoint": "/internal/cron/nightly-sync",
+        "cron": "0 0 * * *"
+      }
+    }
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Analyze Flair Engagement",
+        "description": "Scan 90-day flair activity & create/update transparency dashboard",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/analyze-flair"
+      }
+    ]
+  },
+  "dev": {
+    "subreddit": "flair_impact_dev"
+  }
+}
