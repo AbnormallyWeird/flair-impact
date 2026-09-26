@@ -37,6 +37,12 @@
         "helpText": "Group flairs into categories. Enter one group per line in 'GroupName: flair1, flair2' format. Leave blank for no grouping.",
         "placeholder": "Discussion: Question, Peer Help, Open Chat\nPromotions: Vendor, Showcase, Deals",
         "defaultValue": ""
+      },
+      "autoSidebarWidget": {
+        "type": "boolean",
+        "label": "Auto-Add Sidebar Widget",
+        "helpText": "Automatically maintain a 'Flair Analytics' button widget in your subreddit sidebar linking directly to the transparency dashboard.",
+        "defaultValue": true
       }
     }
   },

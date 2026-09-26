@@ -16,7 +16,9 @@ import {
   getSyncStatus,
   saveReport,
   saveSettingsOverride,
-  saveSyncStatus
+  saveSyncStatus,
+  getDashboardPostId,
+  saveDashboardPostId
 } from '../services/storage.js';
 import {
   AggregateReport,
@@ -25,6 +27,7 @@ import {
   FlairsApiResponse,
   ReportApiResponse,
   SettingsApiResponse,
+  SidebarWidgetApiResponse,
   SyncApiResponse,
   UserStatusApiResponse
 } from '../types.js';
@@ -45,6 +48,7 @@ async function getEffectiveSettings(): Promise<AppSettings> {
   let maxPosts = cachedOverride?.maxPosts;
   let minPostsThreshold = cachedOverride?.minPostsThreshold;
   let customGroupsRaw = cachedOverride?.customGroupsRaw;
+  let autoSidebarWidget = cachedOverride?.autoSidebarWidget;
 
   try {
     if (publicDashboard === undefined) {
@@ -67,6 +71,10 @@ async function getEffectiveSettings(): Promise<AppSettings> {
       const val = await settings.get<string>('customGroups');
       if (typeof val === 'string') customGroupsRaw = val;
     }
+    if (autoSidebarWidget === undefined) {
+      const val = await settings.get<boolean>('autoSidebarWidget');
+      if (typeof val === 'boolean') autoSidebarWidget = val;
+    }
   } catch (err) {
     // In local development or uninitialized environments, settings.get may fail gracefully
   }
@@ -76,7 +84,8 @@ async function getEffectiveSettings(): Promise<AppSettings> {
     lookbackDays: lookbackDays ?? DEFAULT_APP_SETTINGS.lookbackDays,
     maxPosts: maxPosts ?? DEFAULT_APP_SETTINGS.maxPosts,
     minPostsThreshold: minPostsThreshold ?? DEFAULT_APP_SETTINGS.minPostsThreshold,
-    customGroupsRaw: customGroupsRaw ?? DEFAULT_APP_SETTINGS.customGroupsRaw
+    customGroupsRaw: customGroupsRaw ?? DEFAULT_APP_SETTINGS.customGroupsRaw,
+    autoSidebarWidget: autoSidebarWidget ?? DEFAULT_APP_SETTINGS.autoSidebarWidget
   };
 }
 
@@ -302,7 +311,8 @@ app.post('/api/settings', async (c) => {
       lookbackDays: typeof body.lookbackDays === 'number' ? body.lookbackDays : current.lookbackDays,
       maxPosts: typeof body.maxPosts === 'number' ? body.maxPosts : current.maxPosts,
       minPostsThreshold: typeof body.minPostsThreshold === 'number' ? Math.max(1, body.minPostsThreshold) : current.minPostsThreshold,
-      customGroupsRaw: typeof body.customGroupsRaw === 'string' ? body.customGroupsRaw : current.customGroupsRaw
+      customGroupsRaw: typeof body.customGroupsRaw === 'string' ? body.customGroupsRaw : current.customGroupsRaw,
+      autoSidebarWidget: typeof body.autoSidebarWidget === 'boolean' ? body.autoSidebarWidget : current.autoSidebarWidget
     };
 
     await saveSettingsOverride(redis, updatedSettings);
@@ -437,12 +447,193 @@ app.post('/internal/cron/nightly-sync', async (c) => {
 });
 
 /**
+ * Checks whether an active Flair Impact Dashboard post already exists for this subreddit.
+ * Checks Redis first, and falls back to scanning recent submissions to detect any pre-existing dashboard post.
+ */
+async function findExistingDashboardPost(subredditName: string): Promise<any | null> {
+  // 1. Check Redis for a tracked postId
+  const cachedId = await getDashboardPostId(redis);
+  if (cachedId) {
+    try {
+      const post = await reddit.getPostById(cachedId as any);
+      if (post && !post.removed) {
+        return post;
+      }
+    } catch {
+      // Cached post was deleted or inaccessible
+    }
+  }
+
+  // 2. Scan recent posts on the subreddit to find any existing dashboard post
+  if (subredditName && subredditName !== 'unknown') {
+    try {
+      const recentPosts = await reddit.getNewPosts({ subredditName, limit: 25 }).all();
+      for (const p of recentPosts) {
+        if (
+          !p.removed &&
+          p.title &&
+          (p.title.includes('Flair Impact & Transparency Dashboard') ||
+            p.title.includes('Flair Response & Impact Analyzer') ||
+            p.title.includes('Flair Impact'))
+        ) {
+          // Found an existing active post! Track its ID in Redis
+          await saveDashboardPostId(redis, p.id);
+          return p;
+        }
+      }
+    } catch (err) {
+      console.warn(`Could not scan recent posts for existing dashboard on r/${subredditName}:`, err);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Automatically creates or updates a Button Widget in the subreddit sidebar linking to the dashboard post.
+ */
+export async function syncSidebarWidget(
+  subredditName: string,
+  postPermalink: string
+): Promise<{ success: boolean; widgetId?: string; alreadyExisted?: boolean; error?: string }> {
+  if (!subredditName || subredditName === 'unknown') {
+    return { success: false, error: 'Subreddit name not resolved' };
+  }
+
+  const fullUrl = postPermalink.startsWith('http')
+    ? postPermalink
+    : `https://www.reddit.com${postPermalink}`;
+
+  const WIDGET_NAME = 'Flair Analytics';
+  const WIDGET_DESC = 'Explore community flair engagement, response times, and discussion trends.';
+  const BUTTON_TEXT = '📊 View Flair Dashboard';
+
+  try {
+    let existingWidget: any = null;
+    try {
+      const widgets = await reddit.getWidgets(subredditName);
+      existingWidget = widgets.find(
+        (w: any) =>
+          w.name === WIDGET_NAME ||
+          w.name === 'Flair Impact' ||
+          w.name === 'Flair Transparency'
+      );
+    } catch (e) {
+      console.warn(`Could not list widgets for r/${subredditName}:`, e);
+    }
+
+    if (existingWidget) {
+      try {
+        await reddit.updateWidget({
+          type: 'button',
+          subreddit: subredditName,
+          id: existingWidget.id,
+          shortName: WIDGET_NAME,
+          description: WIDGET_DESC,
+          buttons: [
+            {
+              kind: 'text',
+              text: BUTTON_TEXT,
+              url: fullUrl
+            }
+          ]
+        });
+        return { success: true, widgetId: existingWidget.id, alreadyExisted: true };
+      } catch (updateErr: any) {
+        console.warn(`Could not update existing sidebar widget ${existingWidget.id}:`, updateErr);
+        return { success: true, widgetId: existingWidget.id, alreadyExisted: true };
+      }
+    }
+
+    const newWidget = await reddit.addWidget({
+      type: 'button',
+      subreddit: subredditName,
+      shortName: WIDGET_NAME,
+      description: WIDGET_DESC,
+      buttons: [
+        {
+          kind: 'text',
+          text: BUTTON_TEXT,
+          url: fullUrl
+        }
+      ]
+    });
+
+    return { success: true, widgetId: newWidget.id, alreadyExisted: false };
+  } catch (err: any) {
+    console.warn(`Failed to automatically add sidebar widget to r/${subredditName}:`, err);
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * POST /api/sidebar-widget
+ * Moderator endpoint to automatically add or synchronize the subreddit sidebar widget.
+ */
+app.post('/api/sidebar-widget', async (c) => {
+  const subredditName = context.subredditName ?? '';
+  const userId = context.userId;
+
+  const isMod = await checkIsModerator(subredditName, userId);
+  if (!isMod) {
+    return c.json<SidebarWidgetApiResponse>(
+      {
+        success: false,
+        error: 'Unauthorized: Only subreddit moderators can configure sidebar widgets.'
+      },
+      403
+    );
+  }
+
+  const existingPost = await findExistingDashboardPost(subredditName);
+  if (!existingPost) {
+    return c.json<SidebarWidgetApiResponse>(
+      {
+        success: false,
+        error: 'No active dashboard post found. Please publish a dashboard post to your subreddit first.'
+      },
+      400
+    );
+  }
+
+  const fullUrl = `https://www.reddit.com${existingPost.permalink}`;
+  const result = await syncSidebarWidget(subredditName, existingPost.permalink);
+
+  return c.json<SidebarWidgetApiResponse>({
+    success: result.success,
+    widgetId: result.widgetId,
+    alreadyExisted: result.alreadyExisted,
+    permalink: existingPost.permalink,
+    fullUrl,
+    message: result.success
+      ? (result.alreadyExisted
+          ? 'Updated existing "Flair Analytics" button widget in your subreddit sidebar.'
+          : 'Successfully added "Flair Analytics" button widget to your subreddit sidebar!')
+      : `Could not automatically create widget (${result.error || 'permission denied'}). You can add it manually using Mod Tools.`,
+    error: result.error
+  });
+});
+
+/**
  * POST /internal/menu/analyze-flair
  * Moderator menu action in subreddit tools: opens a confirmation form to customize and publish the post.
+ * If an active dashboard post already exists, navigates directly to it rather than creating a duplicate.
  */
 app.post('/internal/menu/analyze-flair', async (c) => {
   const subredditName = context.subredditName ?? 'this community';
   const currentSettings = await getEffectiveSettings();
+
+  // If a dashboard post already exists, do not create a duplicate — navigate directly to it!
+  const existingPost = await findExistingDashboardPost(subredditName);
+  if (existingPost) {
+    return c.json<UiResponse>({
+      navigateTo: `https://www.reddit.com${existingPost.permalink}`,
+      showToast: {
+        text: `Dashboard post already active! Redirecting to post...`,
+        appearance: 'success'
+      }
+    });
+  }
 
   return c.json<UiResponse>({
     showForm: {
@@ -473,6 +664,13 @@ app.post('/internal/menu/analyze-flair', async (c) => {
             label: 'Pin / Sticky Post to Subreddit Feed',
             helpText: 'Pin the dashboard to the top of your community feed for easy discovery.',
             defaultValue: true
+          },
+          {
+            type: 'boolean',
+            name: 'addSidebarWidget',
+            label: 'Add Widget to Subreddit Sidebar',
+            helpText: 'Automatically create a "Flair Analytics" button in your desktop subreddit sidebar linking directly to this dashboard.',
+            defaultValue: currentSettings.autoSidebarWidget ?? true
           }
         ]
       }
@@ -501,6 +699,18 @@ app.post('/internal/forms/create-dashboard-post', async (c) => {
     );
   }
 
+  // Double-check to prevent duplicate post creation
+  const existingPost = await findExistingDashboardPost(subredditName);
+  if (existingPost) {
+    return c.json<UiResponse>({
+      navigateTo: `https://www.reddit.com${existingPost.permalink}`,
+      showToast: {
+        text: `Active dashboard post already exists on r/${subredditName}!`,
+        appearance: 'neutral'
+      }
+    });
+  }
+
   const body = (await c.req.json()) as any;
   const values = body.values || body;
 
@@ -514,6 +724,9 @@ app.post('/internal/forms/create-dashboard-post', async (c) => {
 
   const stickyPost =
     typeof values.stickyPost === 'boolean' ? values.stickyPost : false;
+
+  const addSidebarWidget =
+    typeof values.addSidebarWidget === 'boolean' ? values.addSidebarWidget : true;
 
   // Persist the chosen visibility
   const currentSettings = await getEffectiveSettings();
@@ -532,6 +745,9 @@ app.post('/internal/forms/create-dashboard-post', async (c) => {
     title: postTitle
   });
 
+  // Track the created post in Redis so future clicks never create duplicates
+  await saveDashboardPostId(redis, post.id);
+
   // Approve & optionally sticky
   try {
     await post.approve();
@@ -542,10 +758,23 @@ app.post('/internal/forms/create-dashboard-post', async (c) => {
     console.warn('Could not auto-approve or sticky post:', e);
   }
 
+  // Auto-add or synchronize the subreddit sidebar widget
+  let sidebarNotice = '';
+  if (addSidebarWidget) {
+    try {
+      const swRes = await syncSidebarWidget(subredditName, post.permalink);
+      if (swRes.success) {
+        sidebarNotice = ' + Sidebar widget added!';
+      }
+    } catch (e) {
+      console.warn('Could not auto-add sidebar widget:', e);
+    }
+  }
+
   return c.json<UiResponse>({
     navigateTo: `https://www.reddit.com${post.permalink}`,
     showToast: {
-      text: `Published dashboard post to r/${subredditName}! (${report.totalPostsAnalyzed} posts analyzed)`,
+      text: `Published dashboard post to r/${subredditName}! (${report.totalPostsAnalyzed} posts analyzed)${sidebarNotice}`,
       appearance: 'success'
     }
   });

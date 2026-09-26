@@ -38,6 +38,7 @@ export interface AppSettings {
   maxPosts: number;
   minPostsThreshold: number;
   customGroupsRaw: string;
+  autoSidebarWidget: boolean;
 }
 
 export interface AggregateReport {
@@ -103,11 +104,22 @@ export interface SettingsApiResponse {
   error?: string;
 }
 
+export interface SidebarWidgetApiResponse {
+  success: boolean;
+  widgetId?: string;
+  alreadyExisted?: boolean;
+  permalink?: string;
+  fullUrl?: string;
+  message?: string;
+  error?: string;
+}
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   publicDashboard: true,
   lookbackDays: 90,
   maxPosts: 1000,
   minPostsThreshold: 5,
-  customGroupsRaw: ''
+  customGroupsRaw: '',
+  autoSidebarWidget: true
 };
 

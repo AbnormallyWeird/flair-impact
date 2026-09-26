@@ -30,12 +30,20 @@ export function App() {
 
   // Settings form fields
   const [editPublicDashboard, setEditPublicDashboard] = useState<boolean>(true);
+  const [editAutoSidebarWidget, setEditAutoSidebarWidget] = useState<boolean>(true);
   const [editLookbackDays, setEditLookbackDays] = useState<number>(90);
   const [editMaxPosts, setEditMaxPosts] = useState<number>(1000);
   const [editMinThreshold, setEditMinThreshold] = useState<number>(5);
   const [editCustomGroupsRaw, setEditCustomGroupsRaw] = useState<string>('');
   const [availableSubredditFlairs, setAvailableSubredditFlairs] = useState<string[]>([]);
   const [isPrivateScreen, setIsPrivateScreen] = useState<boolean>(false);
+
+  // Sidebar widget modal & state
+  const [sidebarModalOpen, setSidebarModalOpen] = useState<boolean>(false);
+  const [syncingWidget, setSyncingWidget] = useState<boolean>(false);
+  const [widgetSyncResult, setWidgetSyncResult] = useState<{ success: boolean; text: string } | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
+  const [copiedMarkdown, setCopiedMarkdown] = useState<boolean>(false);
 
   // Filters, tabs, and layout
   const [activeTab, setActiveTab] = useState<'overview' | 'rankings' | 'groups'>('overview');
@@ -75,6 +83,7 @@ export function App() {
   const syncSettingsState = (newSettings: AppSettings) => {
     setSettings(newSettings);
     setEditPublicDashboard(newSettings.publicDashboard ?? true);
+    setEditAutoSidebarWidget(newSettings.autoSidebarWidget ?? true);
     setEditLookbackDays(newSettings.lookbackDays ?? 90);
     setEditMaxPosts(newSettings.maxPosts ?? 1000);
     setEditMinThreshold(newSettings.minPostsThreshold ?? 5);
@@ -201,7 +210,8 @@ export function App() {
       lookbackDays: Number(editLookbackDays) || 90,
       maxPosts: Number(editMaxPosts) || 1000,
       minPostsThreshold: Number(editMinThreshold) || 5,
-      customGroupsRaw: editCustomGroupsRaw
+      customGroupsRaw: editCustomGroupsRaw,
+      autoSidebarWidget: editAutoSidebarWidget
     };
 
     if (isLocalPreview) {
@@ -239,6 +249,74 @@ export function App() {
     } finally {
       setSavingSettings(false);
     }
+  };
+
+  const currentSubredditName = report?.subredditName || userStatus?.subredditName || 'flair_impact_dev';
+
+  const dashboardDirectUrl = useMemo(() => {
+    if (typeof window !== 'undefined' && window.location.href.includes('/comments/')) {
+      return window.location.href;
+    }
+    return `https://www.reddit.com/r/${currentSubredditName}/`;
+  }, [currentSubredditName]);
+
+  const markdownWidgetSnippet = useMemo(() => {
+    return `### 📊 Flair Impact & Response Dashboard\n\nExplore community flair response times, discussion volumes, and engagement trends:\n\n[**👉 Open Interactive Dashboard**](${dashboardDirectUrl})`;
+  }, [dashboardDirectUrl]);
+
+  const handleSyncSidebarWidget = async () => {
+    setSyncingWidget(true);
+    setWidgetSyncResult(null);
+
+    if (isLocalPreview) {
+      setTimeout(() => {
+        setSyncingWidget(false);
+        setWidgetSyncResult({
+          success: true,
+          text: '✓ Local Preview Mode: Simulated adding "Flair Analytics" button to sidebar!'
+        });
+        showToast('✓ Subreddit sidebar widget synchronized!');
+      }, 600);
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/sidebar-widget', { method: 'POST' });
+      const data = (await res.json()) as any;
+      if (data.success) {
+        setWidgetSyncResult({
+          success: true,
+          text: data.message || '✓ Successfully added button widget to your subreddit sidebar!'
+        });
+        showToast('✓ Subreddit sidebar widget updated!');
+      } else {
+        setWidgetSyncResult({
+          success: false,
+          text: data.message || data.error || 'Could not automatically add widget.'
+        });
+      }
+    } catch (err: any) {
+      setWidgetSyncResult({
+        success: false,
+        text: `Error connecting to widget API: ${err?.message || 'Network error'}`
+      });
+    } finally {
+      setSyncingWidget(false);
+    }
+  };
+
+  const handleCopyDashboardUrl = () => {
+    navigator.clipboard.writeText(dashboardDirectUrl);
+    setCopiedUrl(true);
+    showToast('✓ Direct dashboard link copied to clipboard!');
+    setTimeout(() => setCopiedUrl(false), 3000);
+  };
+
+  const handleCopyMarkdownSnippet = () => {
+    navigator.clipboard.writeText(markdownWidgetSnippet);
+    setCopiedMarkdown(true);
+    showToast('✓ Markdown sidebar widget code copied!');
+    setTimeout(() => setCopiedMarkdown(false), 3000);
   };
 
   const discoveredFlairs = useMemo(() => {
@@ -531,6 +609,7 @@ export function App() {
               style={styles.settingsButton}
               onClick={() => {
                 setEditPublicDashboard(settings.publicDashboard ?? true);
+                setEditAutoSidebarWidget(settings.autoSidebarWidget ?? true);
                 setEditLookbackDays(settings.lookbackDays);
                 setEditMaxPosts(settings.maxPosts);
                 setEditMinThreshold(settings.minPostsThreshold);
@@ -539,6 +618,9 @@ export function App() {
               }}
             >
               ⚙️ App Settings & Groups
+            </button>
+            <button style={styles.sidebarButton} onClick={() => setSidebarModalOpen(true)}>
+              📌 Sidebar Widget
             </button>
             <button style={styles.secondaryButton} onClick={() => setExportModalOpen(true)}>
               📥 Export Raw Data
@@ -873,6 +955,28 @@ export function App() {
                 </label>
               </div>
 
+              {/* Auto-Add Sidebar Widget Property */}
+              <div style={styles.visibilityCard}>
+                <label style={styles.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={editAutoSidebarWidget}
+                    onChange={(e) => setEditAutoSidebarWidget(e.target.checked)}
+                    style={styles.checkboxInput}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 13 }}>
+                      📌 Auto-Add Sidebar Widget
+                    </div>
+                    <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 2 }}>
+                      {editAutoSidebarWidget
+                        ? 'Active: Automatically keep a "Flair Analytics" button widget in your subreddit sidebar linking here.'
+                        : 'Disabled: Subreddit sidebar will not be automatically updated with a dashboard button.'}
+                    </div>
+                  </div>
+                </label>
+              </div>
+
               <div style={styles.formRow}>
                 <div style={styles.formField}>
                   <label style={styles.label}>Lookback Period (Days):</label>
@@ -1094,6 +1198,155 @@ export function App() {
               </button>
               <button style={styles.secondaryButton} onClick={() => setExportModalOpen(false)}>
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subreddit Sidebar Integration Modal (Moderators) */}
+      {sidebarModalOpen && (
+        <div style={styles.modalBackdrop}>
+          <div style={styles.modalContent}>
+            <div style={styles.modalHeader}>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0, color: '#f8fafc' }}>
+                  📌 Subreddit Sidebar Integration
+                </h2>
+                <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>
+                  Feature this dashboard in your community sidebar on desktop and mobile web.
+                </div>
+              </div>
+              <button style={styles.closeButton} onClick={() => setSidebarModalOpen(false)}>
+                ✕
+              </button>
+            </div>
+
+            <div style={styles.modalBody}>
+              {/* Method 1: Automatic 1-Click Sync */}
+              <div style={styles.sidebarSectionCard}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 16 }}>🚀</span>
+                  <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 14 }}>
+                    Method 1: Automatic 1-Click Sync
+                  </div>
+                </div>
+                <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+                  The app will communicate directly with Reddit's Widget API to create or update a dedicated <strong>"Flair Analytics"</strong> button widget in <strong>r/{currentSubredditName}</strong>'s sidebar.
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <button
+                    style={syncingWidget ? styles.buttonDisabled : styles.syncWidgetButton}
+                    onClick={handleSyncSidebarWidget}
+                    disabled={syncingWidget}
+                  >
+                    {syncingWidget ? '⏳ Connecting to Reddit Widget API...' : '⚡ Auto-Add Widget to Sidebar'}
+                  </button>
+                </div>
+
+                {widgetSyncResult && (
+                  <div
+                    style={
+                      widgetSyncResult.success
+                        ? styles.widgetResultSuccess
+                        : styles.widgetResultNotice
+                    }
+                  >
+                    {widgetSyncResult.text}
+                  </div>
+                )}
+              </div>
+
+              {/* Method 2: Direct Links & 3-Step Mod Tools Guide */}
+              <div style={styles.sidebarSectionCard}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 16 }}>🛠️</span>
+                  <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 14 }}>
+                    Method 2: Manual Sidebar Widget (Mod Tools)
+                  </div>
+                </div>
+                <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
+                  You can also add or customize a button or text widget anytime via Reddit's native Community Appearance controls.
+                </div>
+
+                {/* Direct Link Copy Field */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 600, color: '#e2e8f0', fontSize: 12, marginBottom: 4 }}>
+                    🔗 Direct Dashboard Post URL:
+                  </div>
+                  <div style={styles.copyRow}>
+                    <input
+                      type="text"
+                      readOnly
+                      value={dashboardDirectUrl}
+                      style={styles.copyInput}
+                    />
+                    <button style={styles.copyButton} onClick={handleCopyDashboardUrl}>
+                      {copiedUrl ? '✓ Copied' : '📋 Copy URL'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Markdown Snippet Copy Field */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontWeight: 600, color: '#e2e8f0', fontSize: 12, marginBottom: 4 }}>
+                    📝 Markdown Widget Code:
+                  </div>
+                  <div style={styles.copyRow}>
+                    <input
+                      type="text"
+                      readOnly
+                      value={`[📊 View Community Flair Analytics](${dashboardDirectUrl})`}
+                      style={styles.copyInput}
+                    />
+                    <button style={styles.copyButton} onClick={handleCopyMarkdownSnippet}>
+                      {copiedMarkdown ? '✓ Copied' : '📋 Copy Code'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Step-by-Step Instructions */}
+                <div style={styles.stepsContainer}>
+                  <div style={styles.stepItem}>
+                    <div style={styles.stepBadge}>1</div>
+                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
+                      Open <strong>Mod Tools</strong> →{' '}
+                      <a
+                        href={`https://www.reddit.com/r/${currentSubredditName}/about/edit?page=widgets`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#38bdf8', textDecoration: 'underline' }}
+                      >
+                        Community Appearance &gt; Sidebar Widgets ↗
+                      </a>
+                    </div>
+                  </div>
+                  <div style={styles.stepItem}>
+                    <div style={styles.stepBadge}>2</div>
+                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
+                      Click <strong>Add Widget</strong> and select <strong>Button</strong> (or <strong>Text Area</strong>).
+                    </div>
+                  </div>
+                  <div style={styles.stepItem}>
+                    <div style={styles.stepBadge}>3</div>
+                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
+                      Set the title to <strong>Flair Analytics</strong>, add a button labeled <strong>📊 View Flair Dashboard</strong>, and paste the URL copied above.
+                    </div>
+                  </div>
+                  <div style={styles.stepItem}>
+                    <div style={styles.stepBadge}>4</div>
+                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
+                      Click <strong>Save</strong>! The widget will instantly appear in the right-hand sidebar for all visitors.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={styles.modalFooter}>
+              <button style={styles.primaryButton} onClick={() => setSidebarModalOpen(false)}>
+                Done
               </button>
             </div>
           </div>
@@ -1384,6 +1637,104 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
+  },
+  sidebarButton: {
+    backgroundColor: '#1e293b',
+    color: '#38bdf8',
+    border: '1px solid #0284c7',
+    borderRadius: 6,
+    padding: '5px 12px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  syncWidgetButton: {
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: 6,
+    padding: '7px 14px',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer'
+  },
+  sidebarSectionCard: {
+    backgroundColor: '#161b22',
+    border: '1px solid #30363d',
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 14
+  },
+  widgetResultSuccess: {
+    marginTop: 10,
+    padding: '8px 12px',
+    backgroundColor: '#064e3b33',
+    border: '1px solid #059669',
+    borderRadius: 6,
+    color: '#34d399',
+    fontSize: 12,
+    fontWeight: 600
+  },
+  widgetResultNotice: {
+    marginTop: 10,
+    padding: '8px 12px',
+    backgroundColor: '#78350f33',
+    border: '1px solid #d97706',
+    borderRadius: 6,
+    color: '#fbbf24',
+    fontSize: 12,
+    fontWeight: 600
+  },
+  copyRow: {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'center'
+  },
+  copyInput: {
+    flex: 1,
+    backgroundColor: '#0d1117',
+    border: '1px solid #30363d',
+    borderRadius: 6,
+    padding: '6px 10px',
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontFamily: 'monospace'
+  },
+  copyButton: {
+    backgroundColor: '#21262d',
+    border: '1px solid #30363d',
+    color: '#f0f6fc',
+    borderRadius: 6,
+    padding: '6px 12px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap'
+  },
+  stepsContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    marginTop: 6
+  },
+  stepItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10
+  },
+  stepBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: '50%',
+    backgroundColor: '#38bdf822',
+    border: '1px solid #38bdf8',
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: 700,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0
   },
   primaryButton: {
     backgroundColor: '#ff4500',

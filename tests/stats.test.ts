@@ -144,7 +144,8 @@ describe('Statistical Engine - aggregatePosts with Settings', () => {
       lookbackDays: 60,
       maxPosts: 500,
       minPostsThreshold: 2,
-      customGroupsRaw: 'Interactive: Question, Discussion\nPromos: Showcase'
+      customGroupsRaw: 'Interactive: Question, Discussion\nPromos: Showcase',
+      autoSidebarWidget: true
     };
 
     const report = aggregatePosts(samplePosts, 'devcommunity', customSettings);
@@ -180,7 +181,8 @@ describe('Statistical Engine - aggregatePosts with Settings', () => {
       lookbackDays: 90,
       maxPosts: 1000,
       minPostsThreshold: 2, // Discussion only has 1 post, so it won't be eligible
-      customGroupsRaw: ''
+      customGroupsRaw: '',
+      autoSidebarWidget: true
     };
 
     const report = aggregatePosts(samplePosts, 'devcommunity', settingsWithThreshold);

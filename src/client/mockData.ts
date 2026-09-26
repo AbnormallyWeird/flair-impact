@@ -69,7 +69,8 @@ export const DEFAULT_MOCK_SETTINGS: AppSettings = {
   lookbackDays: 90,
   maxPosts: 1000,
   minPostsThreshold: 5,
-  customGroupsRaw: ''
+  customGroupsRaw: '',
+  autoSidebarWidget: true
 };
 
 export const MOCK_AVAILABLE_FLAIRS: string[] = [

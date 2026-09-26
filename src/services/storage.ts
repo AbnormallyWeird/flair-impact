@@ -4,8 +4,18 @@ import { AggregateReport, AppSettings, SyncStatus } from '../types.js';
 const REDIS_KEYS = {
   LATEST_REPORT: 'flair_analysis:report:latest',
   SYNC_STATUS: 'flair_analysis:status',
-  SETTINGS_OVERRIDE: 'flair_analysis:settings:override'
+  SETTINGS_OVERRIDE: 'flair_analysis:settings:override',
+  DASHBOARD_POST_ID: 'flair_analysis:post_id'
 };
+
+export async function saveDashboardPostId(redis: RedisClient, postId: string): Promise<void> {
+  await redis.set(REDIS_KEYS.DASHBOARD_POST_ID, postId);
+}
+
+export async function getDashboardPostId(redis: RedisClient): Promise<string | null> {
+  const id = await redis.get(REDIS_KEYS.DASHBOARD_POST_ID);
+  return id || null;
+}
 
 export async function saveReport(redis: RedisClient, report: AggregateReport): Promise<void> {
   await redis.set(REDIS_KEYS.LATEST_REPORT, JSON.stringify(report));
