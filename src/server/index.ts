@@ -438,32 +438,114 @@ app.post('/internal/cron/nightly-sync', async (c) => {
 
 /**
  * POST /internal/menu/analyze-flair
- * Moderator menu action in subreddit tools: scans flair activity and creates the custom transparency post.
+ * Moderator menu action in subreddit tools: opens a confirmation form to customize and publish the post.
  */
 app.post('/internal/menu/analyze-flair', async (c) => {
+  const subredditName = context.subredditName ?? 'this community';
+  const currentSettings = await getEffectiveSettings();
+
+  return c.json<UiResponse>({
+    showForm: {
+      name: 'createDashboardPostForm',
+      form: {
+        title: 'Publish Flair Dashboard Post',
+        description: `Configure and publish an interactive Flair Impact Dashboard post directly to the r/${subredditName} feed.`,
+        acceptLabel: 'Publish Post to Subreddit',
+        cancelLabel: 'Cancel',
+        fields: [
+          {
+            type: 'string',
+            name: 'postTitle',
+            label: 'Post Title',
+            defaultValue: `📊 r/${subredditName} Flair Impact & Transparency Dashboard`,
+            required: true
+          },
+          {
+            type: 'boolean',
+            name: 'publicDashboard',
+            label: 'Public Transparency Mode (Community Visible)',
+            helpText: 'When enabled, all community members can view analytics. When disabled, only moderators can view analytics.',
+            defaultValue: currentSettings.publicDashboard
+          },
+          {
+            type: 'boolean',
+            name: 'stickyPost',
+            label: 'Pin / Sticky Post to Subreddit Feed',
+            helpText: 'Pin the dashboard to the top of your community feed for easy discovery.',
+            defaultValue: true
+          }
+        ]
+      }
+    }
+  });
+});
+
+/**
+ * POST /internal/forms/create-dashboard-post
+ * Form handler: executes when moderator confirms the "Publish Post to Subreddit" dialog.
+ */
+app.post('/internal/forms/create-dashboard-post', async (c) => {
   const subredditName = context.subredditName ?? '';
-  console.log(`[Mod Menu] 'Analyze Flair Engagement' invoked for r/${subredditName}`);
+  const userId = context.userId;
+
+  const isMod = await checkIsModerator(subredditName, userId);
+  if (!isMod) {
+    return c.json<UiResponse>(
+      {
+        showToast: {
+          text: 'Unauthorized: Only moderators can create dashboard posts.',
+          appearance: 'neutral'
+        }
+      },
+      403
+    );
+  }
+
+  const body = (await c.req.json()) as any;
+  const values = body.values || body;
+
+  const postTitle =
+    typeof values.postTitle === 'string' && values.postTitle.trim()
+      ? values.postTitle.trim()
+      : `📊 r/${subredditName} Flair Impact & Transparency Dashboard`;
+
+  const publicDashboard =
+    typeof values.publicDashboard === 'boolean' ? values.publicDashboard : true;
+
+  const stickyPost =
+    typeof values.stickyPost === 'boolean' ? values.stickyPost : false;
+
+  // Persist the chosen visibility
+  const currentSettings = await getEffectiveSettings();
+  const updatedSettings: AppSettings = {
+    ...currentSettings,
+    publicDashboard
+  };
+  await saveSettingsOverride(redis, updatedSettings);
 
   // Run initial or refreshed sync
-  const report = await performSync(subredditName);
+  const report = await performSync(subredditName, updatedSettings);
 
-  // Submit custom transparency post
+  // Submit custom post to subreddit
   const post = await reddit.submitCustomPost({
     subredditName,
-    title: `📊 r/${subredditName} Flair Impact & Transparency Dashboard`
+    title: postTitle
   });
 
-  // Approve post so it is immediately visible
+  // Approve & optionally sticky
   try {
     await post.approve();
+    if (stickyPost) {
+      await post.sticky();
+    }
   } catch (e) {
-    console.warn('Could not auto-approve custom post:', e);
+    console.warn('Could not auto-approve or sticky post:', e);
   }
 
   return c.json<UiResponse>({
     navigateTo: `https://www.reddit.com${post.permalink}`,
     showToast: {
-      text: `Flair analysis complete! Scanned ${report.totalPostsAnalyzed} posts. Dashboard created.`,
+      text: `Published dashboard post to r/${subredditName}! (${report.totalPostsAnalyzed} posts analyzed)`,
       appearance: 'success'
     }
   });

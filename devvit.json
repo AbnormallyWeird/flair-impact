@@ -61,11 +61,14 @@
       }
     }
   },
+  "forms": {
+    "createDashboardPostForm": "/internal/forms/create-dashboard-post"
+  },
   "menu": {
     "items": [
       {
-        "label": "Analyze Flair Engagement",
-        "description": "Scan 90-day flair activity & create/update transparency dashboard",
+        "label": "Create Flair Dashboard Post",
+        "description": "Configure and publish an interactive flair dashboard post to your subreddit",
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/analyze-flair"
