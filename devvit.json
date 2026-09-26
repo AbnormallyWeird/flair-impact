@@ -54,9 +54,7 @@
     "entry": "index.cjs"
   },
   "triggers": {
-    "onAppInstall": {
-      "endpoint": "/internal/triggers/on-install"
-    }
+    "onAppInstall": "/internal/triggers/on-install"
   },
   "scheduler": {
     "tasks": {
