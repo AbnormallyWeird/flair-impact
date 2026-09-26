@@ -522,6 +522,16 @@ export async function syncSidebarWidget(
       console.warn(`Could not list widgets for r/${subredditName}:`, e);
     }
 
+    const buttonPayload = {
+      kind: 'text',
+      text: BUTTON_TEXT,
+      url: fullUrl,
+      linkUrl: fullUrl,
+      color: '#0079D3',
+      fillColor: '#0079D3',
+      textColor: '#FFFFFF'
+    };
+
     if (existingWidget) {
       try {
         await reddit.updateWidget({
@@ -530,13 +540,7 @@ export async function syncSidebarWidget(
           id: existingWidget.id,
           shortName: WIDGET_NAME,
           description: WIDGET_DESC,
-          buttons: [
-            {
-              kind: 'text',
-              text: BUTTON_TEXT,
-              url: fullUrl
-            }
-          ]
+          buttons: [buttonPayload]
         });
         return { success: true, widgetId: existingWidget.id, alreadyExisted: true };
       } catch (updateErr: any) {
@@ -545,21 +549,26 @@ export async function syncSidebarWidget(
       }
     }
 
-    const newWidget = await reddit.addWidget({
-      type: 'button',
-      subreddit: subredditName,
-      shortName: WIDGET_NAME,
-      description: WIDGET_DESC,
-      buttons: [
-        {
-          kind: 'text',
-          text: BUTTON_TEXT,
-          url: fullUrl
-        }
-      ]
-    });
+    try {
+      const newWidget = await reddit.addWidget({
+        type: 'button',
+        subreddit: subredditName,
+        shortName: WIDGET_NAME,
+        description: WIDGET_DESC,
+        buttons: [buttonPayload]
+      });
 
-    return { success: true, widgetId: newWidget.id, alreadyExisted: false };
+      return { success: true, widgetId: newWidget.id, alreadyExisted: false };
+    } catch (btnErr) {
+      console.warn('Button widget creation failed, attempting fallback to textarea widget:', btnErr);
+      const textWidget = await reddit.addWidget({
+        type: 'textarea',
+        subreddit: subredditName,
+        shortName: WIDGET_NAME,
+        text: `### 📊 Flair Impact Dashboard\n\nExplore community flair response times, discussion volumes, and engagement trends:\n\n[**👉 Open Interactive Dashboard**](${fullUrl})`
+      });
+      return { success: true, widgetId: textWidget.id, alreadyExisted: false };
+    }
   } catch (err: any) {
     console.warn(`Failed to automatically add sidebar widget to r/${subredditName}:`, err);
     return { success: false, error: err?.message || String(err) };
