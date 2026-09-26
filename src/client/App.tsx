@@ -37,10 +37,29 @@ export function App() {
   const [availableSubredditFlairs, setAvailableSubredditFlairs] = useState<string[]>([]);
   const [isPrivateScreen, setIsPrivateScreen] = useState<boolean>(false);
 
-  // Filters and sorting
+  // Filters, tabs, and layout
+  const [activeTab, setActiveTab] = useState<'overview' | 'rankings' | 'groups'>('overview');
+  const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'median_comments' | 'baseline_delta' | 'volume' | 'avg_comments' | 'score'>('median_comments');
+
+  const handleToggleExpand = (e: React.MouseEvent) => {
+    try {
+      window.parent.postMessage(
+        {
+          type: 'devvit-internal',
+          scope: 'CLIENT',
+          effect_type: 4,
+          immersiveMode: { immersiveMode: isExpanded ? 0 : 1 }
+        },
+        '*'
+      );
+    } catch {
+      // Ignore if not embedded in Reddit iframe
+    }
+    setIsExpanded((prev) => !prev);
+  };
 
   // Mod controls & Export modal
   const [exportModalOpen, setExportModalOpen] = useState<boolean>(false);
@@ -464,11 +483,20 @@ export function App() {
         </div>
 
         <div style={styles.headerRight}>
-          <div style={styles.syncBadge}>
-            <span style={styles.pulseDot} />
-            <span>
-              Updated {new Date(report.generatedAt).toLocaleDateString()} {new Date(report.generatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={styles.syncBadge}>
+              <span style={styles.pulseDot} />
+              <span>
+                {new Date(report.generatedAt).toLocaleDateString()}
+              </span>
+            </div>
+            <button
+              style={styles.expandButton}
+              onClick={handleToggleExpand}
+              title={isExpanded ? 'Exit expanded view' : 'Expand full screen'}
+            >
+              {isExpanded ? '🗗 Inline' : '⛶ Expand'}
+            </button>
           </div>
           {isMod && (
             <button
@@ -519,80 +547,120 @@ export function App() {
         </section>
       )}
 
+      {/* Navigation Tabs (Keeps inline height compact so zero internal scrollbar) */}
+      <nav style={styles.navTabs}>
+        <button
+          style={activeTab === 'overview' ? styles.navTabActive : styles.navTab}
+          onClick={() => setActiveTab('overview')}
+        >
+          📊 Overview
+        </button>
+        <button
+          style={activeTab === 'rankings' ? styles.navTabActive : styles.navTab}
+          onClick={() => setActiveTab('rankings')}
+        >
+          📋 Flair Rankings ({report.flairBreakdown.length})
+        </button>
+        {hasCustomGroups && (
+          <button
+            style={activeTab === 'groups' ? styles.navTabActive : styles.navTab}
+            onClick={() => setActiveTab('groups')}
+          >
+            🏷️ Custom Groups ({report.groupSummaries?.length})
+          </button>
+        )}
+      </nav>
+
       {/* Subreddit Response Rate Overview Cards */}
-      <section style={styles.overviewCard}>
-        <div style={styles.overviewHeader}>
-          <div style={styles.overviewIconBox}>📈</div>
-          <div>
-            <div style={styles.overviewCardTitle}>Community Response Rate Overview</div>
-            <div style={styles.overviewCardSubtitle}>
-              Benchmarking how topic and post flairs influence community participation and discussion rates
+      {activeTab === 'overview' && (
+        <section style={styles.overviewCard}>
+          {report.totalPostsAnalyzed === 0 ? (
+            <div style={styles.emptyStateBanner}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>🌱</div>
+              <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 16 }}>
+                No Post Activity Detected Yet
+              </div>
+              <div style={{ color: '#94a3b8', fontSize: 13, marginTop: 6, maxWidth: 480, margin: '6px auto 0', lineHeight: 1.5 }}>
+                <strong>r/{report.subredditName}</strong> hasn't had any submissions in the last {report.windowDays} days. Once posts with flairs are created, click <strong>↻ Sync Data Now</strong> to calculate response rates!
+              </div>
             </div>
-          </div>
-        </div>
+          ) : (
+            <>
+              <div style={styles.overviewHeader}>
+                <div style={styles.overviewIconBox}>📈</div>
+                <div>
+                  <div style={styles.overviewCardTitle}>Community Response Rate Overview</div>
+                  <div style={styles.overviewCardSubtitle}>
+                    Benchmarking how topic and post flairs influence community participation and discussion rates
+                  </div>
+                </div>
+              </div>
 
-        <div style={styles.overviewMetricsGrid}>
-          <div style={styles.overviewMetricBox}>
-            <div style={styles.metricLabel}>Community Baseline (Median)</div>
-            <div style={{ ...styles.metricValue, color: '#f8fafc' }}>
-              {report.overallMedianComments}
-              <span style={styles.metricUnit}> comments/post</span>
-            </div>
-            <div style={styles.metricSub}>
-              Median across all {report.totalPostsAnalyzed} submissions
-            </div>
-          </div>
+              <div style={styles.overviewMetricsGrid}>
+                <div style={styles.overviewMetricBox}>
+                  <div style={styles.metricLabel}>Community Baseline (Median)</div>
+                  <div style={{ ...styles.metricValue, color: '#f8fafc' }}>
+                    {report.overallMedianComments}
+                    <span style={styles.metricUnit}> comments/post</span>
+                  </div>
+                  <div style={styles.metricSub}>
+                    Median across all {report.totalPostsAnalyzed} submissions
+                  </div>
+                </div>
 
-          <div style={styles.overviewMetricBox}>
-            <div style={styles.metricLabel}>Highest Response Flair</div>
-            <div style={{ ...styles.metricValue, color: '#10b981' }}>
-              {report.topResponseFlair ? `${report.topResponseFlair.medianComments}` : 'N/A'}
-              <span style={styles.metricUnit}> comments</span>
-            </div>
-            <div style={styles.metricSub}>
-              {report.topResponseFlair
-                ? `${report.topResponseFlair.flairText} (${report.topResponseFlair.postCount} posts)`
-                : 'No flairs'}
-            </div>
-          </div>
+                <div style={styles.overviewMetricBox}>
+                  <div style={styles.metricLabel}>Highest Response Flair</div>
+                  <div style={{ ...styles.metricValue, color: '#10b981' }}>
+                    {report.topResponseFlair ? `${report.topResponseFlair.medianComments}` : 'N/A'}
+                    <span style={styles.metricUnit}> comments</span>
+                  </div>
+                  <div style={styles.metricSub}>
+                    {report.topResponseFlair
+                      ? `${report.topResponseFlair.flairText} (${report.topResponseFlair.postCount} posts)`
+                      : 'No flairs'}
+                  </div>
+                </div>
 
-          <div style={styles.overviewMetricBox}>
-            <div style={styles.metricLabel}>Lowest Response Flair</div>
-            <div style={{ ...styles.metricValue, color: '#ff585b' }}>
-              {report.lowestResponseFlair ? `${report.lowestResponseFlair.medianComments}` : 'N/A'}
-              <span style={styles.metricUnit}> comments</span>
-            </div>
-            <div style={styles.metricSub}>
-              {report.lowestResponseFlair
-                ? `${report.lowestResponseFlair.flairText} (${report.lowestResponseFlair.postCount} posts)`
-                : 'No flairs'}
-            </div>
-          </div>
+                <div style={styles.overviewMetricBox}>
+                  <div style={styles.metricLabel}>Lowest Response Flair</div>
+                  <div style={{ ...styles.metricValue, color: '#ff585b' }}>
+                    {report.lowestResponseFlair ? `${report.lowestResponseFlair.medianComments}` : 'N/A'}
+                    <span style={styles.metricUnit}> comments</span>
+                  </div>
+                  <div style={styles.metricSub}>
+                    {report.lowestResponseFlair
+                      ? `${report.lowestResponseFlair.flairText} (${report.lowestResponseFlair.postCount} posts)`
+                      : 'No flairs'}
+                  </div>
+                </div>
 
-          <div style={styles.overviewMetricBox}>
-            <div style={styles.metricLabel}>Total Comments Analyzed</div>
-            <div style={{ ...styles.metricValue, color: '#38bdf8' }}>
-              {report.overallTotalComments.toLocaleString()}
-              <span style={styles.metricUnit}> comments</span>
-            </div>
-            <div style={styles.metricSub}>
-              Avg {report.overallAvgComments} comments/post
-            </div>
-          </div>
-        </div>
+                <div style={styles.overviewMetricBox}>
+                  <div style={styles.metricLabel}>Total Comments Analyzed</div>
+                  <div style={{ ...styles.metricValue, color: '#38bdf8' }}>
+                    {report.overallTotalComments.toLocaleString()}
+                    <span style={styles.metricUnit}> comments</span>
+                  </div>
+                  <div style={styles.metricSub}>
+                    Avg {report.overallAvgComments} comments/post
+                  </div>
+                </div>
+              </div>
 
-        <div style={styles.rationaleBox}>
-          <span style={{ fontWeight: 600, color: '#d7dadc' }}>💡 Response Rate Insight: </span>
-          <span>
-            Post flairs directly influence whether submissions spark active community dialogue or get
-            ignored. By focusing on median response rates, extreme viral spikes are filtered out,
-            providing an accurate measure of typical user engagement per post flair.
-          </span>
-        </div>
-      </section>
+              <div style={styles.rationaleBox}>
+                <span style={{ fontWeight: 600, color: '#d7dadc' }}>💡 Response Rate Insight: </span>
+                <span>
+                  Post flairs directly influence whether submissions spark active community dialogue or get
+                  ignored. By focusing on median response rates, extreme viral spikes are filtered out,
+                  providing an accurate measure of typical user engagement per post flair.
+                </span>
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {/* Custom Flair Grouping Tabs (Rendered ONLY if moderator has configured custom groups) */}
-      {hasCustomGroups && (
+      {hasCustomGroups && activeTab === 'groups' && (
         <section style={styles.groupSection}>
           <div style={styles.groupTabsHeader}>
             <span style={{ fontSize: 13, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
@@ -651,105 +719,108 @@ export function App() {
         </section>
       )}
 
-      {/* Table Controls (Search & Sort) */}
-      <section style={styles.tableControls}>
-        <div style={styles.flairCountBadge}>
-          Showing <strong>{filteredFlairs.length}</strong> of {report.flairBreakdown.length} flairs
-        </div>
+      {/* Table Controls (Search & Sort) & Flair Table */}
+      {(activeTab === 'rankings' || (hasCustomGroups && activeTab === 'groups')) && (
+        <>
+          <section style={styles.tableControls}>
+            <div style={styles.flairCountBadge}>
+              Showing <strong>{filteredFlairs.length}</strong> of {report.flairBreakdown.length} flairs
+            </div>
 
-        <div style={styles.filterActions}>
-          <input
-            type="text"
-            placeholder="Search flairs..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={styles.searchInput}
-          />
+            <div style={styles.filterActions}>
+              <input
+                type="text"
+                placeholder="Search flairs..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={styles.searchInput}
+              />
 
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as any)}
-            style={styles.selectInput}
-          >
-            <option value="median_comments">Sort by Median Response</option>
-            <option value="baseline_delta">Sort by Impact (vs Baseline)</option>
-            <option value="volume">Sort by Post Volume</option>
-            <option value="avg_comments">Sort by Avg Comments</option>
-            <option value="score">Sort by Avg Score</option>
-          </select>
-        </div>
-      </section>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as any)}
+                style={styles.selectInput}
+              >
+                <option value="median_comments">Sort by Median Response</option>
+                <option value="baseline_delta">Sort by Impact (vs Baseline)</option>
+                <option value="volume">Sort by Post Volume</option>
+                <option value="avg_comments">Sort by Avg Comments</option>
+                <option value="score">Sort by Avg Score</option>
+              </select>
+            </div>
+          </section>
 
-      {/* Flair Breakdown Table */}
-      <section style={styles.tableWrapper}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th style={{ ...styles.th, width: '28%' }}>Flair Name</th>
-              <th style={{ ...styles.th, width: '15%', textAlign: 'right' }}>Submissions</th>
-              <th style={{ ...styles.th, width: '27%' }}>Median Response</th>
-              <th style={{ ...styles.th, width: '16%', textAlign: 'center' }}>vs Baseline</th>
-              <th style={{ ...styles.th, width: '7%', textAlign: 'right' }}>Avg Comments</th>
-              <th style={{ ...styles.th, width: '7%', textAlign: 'right' }}>Avg Score</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredFlairs.length === 0 ? (
-              <tr>
-                <td colSpan={6} style={styles.emptyRow}>
-                  No flairs match your search or filter criteria.
-                </td>
-              </tr>
-            ) : (
-              filteredFlairs.map((flair) => {
-                const barWidth = Math.max(
-                  Math.min(Math.round((flair.medianComments / maxMedianComments) * 100), 100),
-                  2
-                );
-                return (
-                  <tr key={flair.flairText} style={styles.tr}>
-                    <td style={styles.td}>
-                      <span style={styles.flairPill}>{flair.flairText}</span>
-                      {flair.assignedGroup && (
-                        <span style={styles.assignedGroupBadge}>{flair.assignedGroup}</span>
-                      )}
+          <section style={styles.tableWrapper}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={{ ...styles.th, width: '28%' }}>Flair Name</th>
+                  <th style={{ ...styles.th, width: '15%', textAlign: 'right' }}>Submissions</th>
+                  <th style={{ ...styles.th, width: '27%' }}>Median Response</th>
+                  <th style={{ ...styles.th, width: '16%', textAlign: 'center' }}>vs Baseline</th>
+                  <th style={{ ...styles.th, width: '7%', textAlign: 'right' }}>Avg Comments</th>
+                  <th style={{ ...styles.th, width: '7%', textAlign: 'right' }}>Avg Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredFlairs.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={styles.emptyRow}>
+                      No flairs match your search or filter criteria.
                     </td>
-                    <td style={{ ...styles.td, textAlign: 'right', fontWeight: 600 }}>
-                      {flair.postCount}
-                      <span style={styles.percentageText}>
-                        {' '}
-                        ({Math.round((flair.postCount / report.totalPostsAnalyzed) * 100)}%)
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <div style={styles.barContainer}>
-                        <div
-                          style={{
-                            ...styles.barFill,
-                            width: `${barWidth}%`,
-                            backgroundColor:
-                              flair.deltaVsCommunityBaselinePct !== null && flair.deltaVsCommunityBaselinePct > 0
-                                ? '#10b981'
-                                : flair.deltaVsCommunityBaselinePct !== null && flair.deltaVsCommunityBaselinePct < 0
-                                ? '#f59e0b'
-                                : '#38bdf8'
-                          }}
-                        />
-                        <span style={styles.barNumber}>{flair.medianComments}</span>
-                      </div>
-                    </td>
-                    <td style={{ ...styles.td, textAlign: 'center' }}>
-                      {getBaselineDeltaBadge(flair.deltaVsCommunityBaselinePct)}
-                    </td>
-                    <td style={{ ...styles.td, textAlign: 'right' }}>{flair.avgComments}</td>
-                    <td style={{ ...styles.td, textAlign: 'right' }}>{flair.avgScore}</td>
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </section>
+                ) : (
+                  filteredFlairs.map((flair) => {
+                    const barWidth = Math.max(
+                      Math.min(Math.round((flair.medianComments / maxMedianComments) * 100), 100),
+                      2
+                    );
+                    return (
+                      <tr key={flair.flairText} style={styles.tr}>
+                        <td style={styles.td}>
+                          <span style={styles.flairPill}>{flair.flairText}</span>
+                          {flair.assignedGroup && (
+                            <span style={styles.assignedGroupBadge}>{flair.assignedGroup}</span>
+                          )}
+                        </td>
+                        <td style={{ ...styles.td, textAlign: 'right', fontWeight: 600 }}>
+                          {flair.postCount}
+                          <span style={styles.percentageText}>
+                            {' '}
+                            ({Math.round((flair.postCount / report.totalPostsAnalyzed) * 100)}%)
+                          </span>
+                        </td>
+                        <td style={styles.td}>
+                          <div style={styles.barContainer}>
+                            <div
+                              style={{
+                                ...styles.barFill,
+                                width: `${barWidth}%`,
+                                backgroundColor:
+                                  flair.deltaVsCommunityBaselinePct !== null && flair.deltaVsCommunityBaselinePct > 0
+                                    ? '#10b981'
+                                    : flair.deltaVsCommunityBaselinePct !== null && flair.deltaVsCommunityBaselinePct < 0
+                                    ? '#f59e0b'
+                                    : '#38bdf8'
+                              }}
+                            />
+                            <span style={styles.barNumber}>{flair.medianComments}</span>
+                          </div>
+                        </td>
+                        <td style={{ ...styles.td, textAlign: 'center' }}>
+                          {getBaselineDeltaBadge(flair.deltaVsCommunityBaselinePct)}
+                        </td>
+                        <td style={{ ...styles.td, textAlign: 'right' }}>{flair.avgComments}</td>
+                        <td style={{ ...styles.td, textAlign: 'right' }}>{flair.avgScore}</td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </section>
+        </>
+      )}
 
       {/* Footer Info */}
       <footer style={styles.footer}>
@@ -1036,10 +1107,10 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     maxWidth: 960,
     margin: '0 auto',
-    padding: '20px 16px',
+    padding: '12px 14px',
     color: '#d7dadc',
-    fontSize: 14,
-    lineHeight: 1.5
+    fontSize: 13,
+    lineHeight: 1.4
   },
   loadingContainer: {
     display: 'flex',
@@ -1109,8 +1180,8 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#0c4a6e33',
     border: '1px solid #0284c7',
     borderRadius: 8,
-    padding: '10px 16px',
-    marginBottom: 20
+    padding: '8px 14px',
+    marginBottom: 12
   },
   previewInfo: {
     fontSize: 13
@@ -1130,8 +1201,8 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 20
+    gap: 10,
+    marginBottom: 10
   },
   headerLeft: {
     flex: 1,
@@ -1141,7 +1212,51 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'flex-end',
-    gap: 8
+    gap: 6
+  },
+  expandButton: {
+    backgroundColor: '#1e293b',
+    color: '#38bdf8',
+    border: '1px solid #0284c7',
+    borderRadius: 6,
+    padding: '3px 10px',
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: 'pointer'
+  },
+  navTabs: {
+    display: 'flex',
+    gap: 8,
+    marginBottom: 12,
+    borderBottom: '1px solid #272729',
+    paddingBottom: 8
+  },
+  navTab: {
+    backgroundColor: '#1a1a1b',
+    color: '#94a3b8',
+    border: '1px solid #343536',
+    borderRadius: 6,
+    padding: '6px 14px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  navTabActive: {
+    backgroundColor: '#ff4500',
+    color: '#ffffff',
+    border: '1px solid #ff4500',
+    borderRadius: 6,
+    padding: '6px 14px',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer'
+  },
+  emptyStateBanner: {
+    padding: '28px 16px',
+    textAlign: 'center',
+    backgroundColor: '#121213',
+    border: '1px dashed #343536',
+    borderRadius: 8
   },
   subTitleRow: {
     display: 'flex',
@@ -1150,16 +1265,16 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap'
   },
   title: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: 700,
     color: '#f8fafc',
     letterSpacing: '-0.3px',
     margin: 0
   },
   subtitle: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#94a3b8',
-    marginTop: 4
+    marginTop: 2
   },
   modBadge: {
     fontSize: 10,
@@ -1198,15 +1313,15 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 6,
-    fontSize: 12,
+    fontSize: 11,
     color: '#94a3b8',
     backgroundColor: '#1e293b',
-    padding: '4px 10px',
+    padding: '3px 8px',
     borderRadius: 12
   },
   pulseDot: {
-    width: 7,
-    height: 7,
+    width: 6,
+    height: 6,
     backgroundColor: '#10b981',
     borderRadius: '50%'
   },
@@ -1215,8 +1330,8 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#d7dadc',
     border: '1px solid #343536',
     borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 13,
+    padding: '5px 12px',
+    fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
   },
@@ -1225,8 +1340,8 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#64748b',
     border: '1px solid #334155',
     borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 13,
+    padding: '5px 12px',
+    fontSize: 12,
     fontWeight: 600,
     cursor: 'not-allowed'
   },
@@ -1235,28 +1350,28 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 10,
     backgroundColor: '#1a1a1b',
     border: '1px solid #343536',
     borderLeft: '4px solid #ff4500',
     borderRadius: 8,
-    padding: '12px 16px',
-    marginBottom: 20
+    padding: '8px 12px',
+    marginBottom: 10
   },
   modBannerInfo: {
-    fontSize: 13
+    fontSize: 12
   },
   modBannerActions: {
     display: 'flex',
-    gap: 10
+    gap: 8
   },
   settingsButton: {
     backgroundColor: '#272729',
     color: '#f8fafc',
     border: '1px solid #475569',
     borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 13,
+    padding: '5px 12px',
+    fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
   },
@@ -1265,8 +1380,8 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#d7dadc',
     border: '1px solid #343536',
     borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 13,
+    padding: '5px 12px',
+    fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
   },
@@ -1275,71 +1390,71 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#ffffff',
     border: 'none',
     borderRadius: 6,
-    padding: '8px 18px',
-    fontSize: 13,
+    padding: '6px 14px',
+    fontSize: 12,
     fontWeight: 700,
     cursor: 'pointer'
   },
   overviewCard: {
     backgroundColor: '#1a1a1b',
     border: '1px solid #343536',
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 20
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 12
   },
   overviewHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 16
+    gap: 10,
+    marginBottom: 12
   },
   overviewIconBox: {
-    fontSize: 22,
+    fontSize: 18,
     backgroundColor: '#272729',
-    width: 44,
-    height: 44,
-    borderRadius: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 8,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center'
   },
   overviewCardTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: 700,
     color: '#f8fafc'
   },
   overviewCardSubtitle: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#818384',
     marginTop: 2
   },
   overviewMetricsGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-    gap: 14,
-    marginBottom: 16
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 10,
+    marginBottom: 12
   },
   overviewMetricBox: {
     backgroundColor: '#121213',
     border: '1px solid #272729',
     borderRadius: 8,
-    padding: '14px 16px'
+    padding: '10px 12px'
   },
   metricLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#818384',
     fontWeight: 600,
     textTransform: 'uppercase',
     letterSpacing: '0.5px'
   },
   metricValue: {
-    fontSize: 26,
+    fontSize: 22,
     fontWeight: 800,
-    marginTop: 6,
-    marginBottom: 4
+    marginTop: 4,
+    marginBottom: 2
   },
   metricUnit: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 500,
     color: '#818384'
   },
@@ -1353,8 +1468,8 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#121213',
     border: '1px solid #272729',
     borderRadius: 6,
-    padding: '10px 14px',
-    lineHeight: 1.5
+    padding: '8px 12px',
+    lineHeight: 1.45
   },
   groupSection: {
     backgroundColor: '#1a1a1b',

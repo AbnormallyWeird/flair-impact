@@ -437,37 +437,6 @@ app.post('/internal/cron/nightly-sync', async (c) => {
 });
 
 /**
- * POST /internal/triggers/on-install
- * Event Trigger: automatically runs initial scan & creates the dashboard post when app is installed.
- */
-app.post('/internal/triggers/on-install', async (c) => {
-  const subredditName = context.subredditName ?? '';
-  console.log(`[onAppInstall] App installed on r/${subredditName}. Auto-generating dashboard...`);
-
-  if (subredditName && subredditName !== 'unknown') {
-    try {
-      const report = await performSync(subredditName);
-      const post = await reddit.submitCustomPost({
-        subredditName,
-        title: `📊 r/${subredditName} Flair Impact & Transparency Dashboard`
-      });
-
-      try {
-        await post.approve();
-      } catch (e) {
-        console.warn('Could not auto-approve custom post:', e);
-      }
-
-      console.log(`[onAppInstall] Auto-created dashboard post ${post.id} for r/${subredditName}`);
-    } catch (err) {
-      console.error(`[onAppInstall] Failed to auto-generate dashboard post on r/${subredditName}:`, err);
-    }
-  }
-
-  return c.json({ success: true });
-});
-
-/**
  * POST /internal/menu/analyze-flair
  * Moderator menu action in subreddit tools: scans flair activity and creates the custom transparency post.
  */
