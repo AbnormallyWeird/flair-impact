@@ -2,9 +2,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import type {
   AggregateReport,
   AppSettings,
-  DEFAULT_APP_SETTINGS,
   FlairMetrics,
-  GroupSummary,
   ReportApiResponse,
   SettingsApiResponse,
   SyncApiResponse,
@@ -12,7 +10,33 @@ import type {
   UserStatusApiResponse
 } from '../types.js';
 import { formatExportCsv, formatExportJson } from '../services/storage.js';
-import { createSimulatedReport, DEFAULT_MOCK_SETTINGS, MOCK_AVAILABLE_FLAIRS, MOCK_REPORT, MOCK_USER_STATUS } from './mockData.js';
+import {
+  createSimulatedReport,
+  DEFAULT_MOCK_SETTINGS,
+  MOCK_AVAILABLE_FLAIRS,
+  MOCK_REPORT,
+  MOCK_USER_STATUS
+} from './mockData.js';
+
+type MetricType = 'median' | 'avg' | 'total';
+
+const FLAIR_PALETTE = [
+  '#0284c7', // Sky
+  '#7c3aed', // Violet
+  '#059669', // Emerald
+  '#d97706', // Amber
+  '#dc2626', // Red
+  '#db2777', // Pink
+  '#2563eb', // Blue
+  '#0d9488', // Teal
+  '#ea580c', // Orange
+  '#4f46e5'  // Indigo
+];
+
+function getFlairColor(flairText: string, index: number): string {
+  if (flairText === 'Unflaired') return '#475569';
+  return FLAIR_PALETTE[index % FLAIR_PALETTE.length];
+}
 
 export function App() {
   const [report, setReport] = useState<AggregateReport | null>(null);
@@ -27,6 +51,7 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_MOCK_SETTINGS);
   const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
   const [savingSettings, setSavingSettings] = useState<boolean>(false);
+  const [modMenuOpen, setModMenuOpen] = useState<boolean>(false);
 
   // Settings form fields
   const [editPublicDashboard, setEditPublicDashboard] = useState<boolean>(true);
@@ -45,14 +70,13 @@ export function App() {
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [copiedMarkdown, setCopiedMarkdown] = useState<boolean>(false);
 
-  // Filters, tabs, and layout
-  const [activeTab, setActiveTab] = useState<'overview' | 'rankings' | 'groups'>('overview');
+  // Visualization focus state
+  const [metric, setMetric] = useState<MetricType>('median');
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedGroup, setSelectedGroup] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<'median_comments' | 'baseline_delta' | 'volume' | 'avg_comments' | 'score'>('median_comments');
 
-  const handleToggleExpand = (e: React.MouseEvent) => {
+  const handleToggleExpand = () => {
     try {
       window.parent.postMessage(
         {
@@ -141,7 +165,6 @@ export function App() {
           );
         }
       } else {
-        // Fallback to local mock data for zero-deployment testing in browser
         setIsLocalPreview(true);
         setIsPrivateScreen(false);
         setReport(MOCK_REPORT);
@@ -150,7 +173,6 @@ export function App() {
         setAvailableSubredditFlairs(MOCK_AVAILABLE_FLAIRS);
       }
     } catch {
-      // Offline / local preview server fallback
       setIsLocalPreview(true);
       setIsPrivateScreen(false);
       setReport(MOCK_REPORT);
@@ -261,7 +283,7 @@ export function App() {
   }, [currentSubredditName]);
 
   const markdownWidgetSnippet = useMemo(() => {
-    return `### 📊 Flair Impact & Response Dashboard\n\nExplore community flair response times, discussion volumes, and engagement trends:\n\n[**👉 Open Interactive Dashboard**](${dashboardDirectUrl})`;
+    return `### 📊 Flair Impact & Response Dashboard\n\nExplore how many comments posts receive by flair:\n\n[**👉 Open Interactive Dashboard**](${dashboardDirectUrl})`;
   }, [dashboardDirectUrl]);
 
   const handleSyncSidebarWidget = async () => {
@@ -349,32 +371,24 @@ export function App() {
   const handleInsertFlair = (flairText: string) => {
     setEditCustomGroupsRaw((prev) => {
       const trimmed = prev.trim();
-      if (!trimmed) {
-        return `Group 1: ${flairText}`;
-      }
-      if (trimmed.endsWith(':')) {
-        return `${prev} ${flairText}`;
-      }
-      if (trimmed.endsWith(',')) {
-        return `${prev} ${flairText}`;
-      }
-      if (prev.endsWith('\n')) {
-        return `${prev}Group: ${flairText}`;
-      }
+      if (!trimmed) return `Group 1: ${flairText}`;
+      if (trimmed.endsWith(':') || trimmed.endsWith(',')) return `${prev} ${flairText}`;
+      if (trimmed.endsWith('\n')) return `${prev}Group: ${flairText}`;
       return `${prev}, ${flairText}`;
     });
   };
 
-  const handleClearGroups = () => {
-    setEditCustomGroupsRaw('');
+  const getMetricValue = (item: FlairMetrics, m: MetricType): number => {
+    if (m === 'median') return item.medianComments;
+    if (m === 'avg') return item.avgComments;
+    return item.totalComments;
   };
 
-  const filteredFlairs = useMemo(() => {
+  const rankedFlairs = useMemo(() => {
     if (!report) return [];
 
     let list = [...report.flairBreakdown];
 
-    // Filter by Custom Group tab
     if (selectedGroup !== 'all') {
       if (selectedGroup === '__ungrouped__') {
         list = list.filter((f) => !f.assignedGroup);
@@ -383,38 +397,42 @@ export function App() {
       }
     }
 
-    // Filter by Search Query
     if (searchQuery.trim().length > 0) {
       const q = searchQuery.toLowerCase();
       list = list.filter((f) => f.flairText.toLowerCase().includes(q));
     }
 
-    // Sort
-    list.sort((a, b) => {
-      if (sortBy === 'volume') return b.postCount - a.postCount;
-      if (sortBy === 'median_comments') return b.medianComments - a.medianComments;
-      if (sortBy === 'avg_comments') return b.avgComments - a.avgComments;
-      if (sortBy === 'score') return b.avgScore - a.avgScore;
-      if (sortBy === 'baseline_delta') {
-        return (b.deltaVsCommunityBaselinePct ?? -999) - (a.deltaVsCommunityBaselinePct ?? -999);
-      }
-      return 0;
-    });
-
+    list.sort((a, b) => getMetricValue(b, metric) - getMetricValue(a, metric));
     return list;
-  }, [report, selectedGroup, searchQuery, sortBy]);
+  }, [report, selectedGroup, searchQuery, metric]);
 
-  const maxMedianComments = useMemo(() => {
-    if (!report || report.flairBreakdown.length === 0) return 1;
-    return Math.max(...report.flairBreakdown.map((f) => f.medianComments), 1);
-  }, [report]);
+  const maxMetricValue = useMemo(() => {
+    if (rankedFlairs.length === 0) return 1;
+    return Math.max(...rankedFlairs.map((f) => getMetricValue(f, metric)), 1);
+  }, [rankedFlairs, metric]);
 
-  const activeGroupSummary = useMemo(() => {
-    if (!report || !report.groupSummaries || selectedGroup === 'all' || selectedGroup === '__ungrouped__') {
-      return null;
+  const benchmarkInfo = useMemo(() => {
+    if (!report) return { value: 0, label: '' };
+    if (metric === 'median') {
+      return {
+        value: report.overallMedianComments,
+        label: `Community Baseline: ${report.overallMedianComments} typical comments / post`
+      };
     }
-    return report.groupSummaries.find((g) => g.groupName === selectedGroup) || null;
-  }, [report, selectedGroup]);
+    if (metric === 'avg') {
+      return {
+        value: report.overallAvgComments,
+        label: `Community Baseline: ${report.overallAvgComments} average comments / post`
+      };
+    }
+    const avgTotal = Math.round(
+      report.overallTotalComments / Math.max(1, report.flairBreakdown.length)
+    );
+    return {
+      value: avgTotal,
+      label: `Average Total Volume per Flair: ${avgTotal.toLocaleString()} comments`
+    };
+  }, [report, metric]);
 
   const ungroupedCount = useMemo(() => {
     if (!report) return 0;
@@ -436,19 +454,12 @@ export function App() {
     }
   };
 
-  const getBaselineDeltaBadge = (delta: number | null) => {
-    if (delta === null) return <span style={styles.deltaNeutral}>—</span>;
-    if (delta > 0) return <span style={styles.deltaPositive}>+{delta}%</span>;
-    if (delta < 0) return <span style={styles.deltaNegative}>{delta}%</span>;
-    return <span style={styles.deltaNeutral}>Baseline</span>;
-  };
-
   if (loading) {
     return (
       <div style={styles.loadingContainer}>
         <div style={styles.spinner} />
-        <div style={{ marginTop: 14, fontSize: 15, fontWeight: 500 }}>
-          Ingesting subreddit flair activity & computing post response rates...
+        <div style={{ marginTop: 14, fontSize: 14, fontWeight: 500 }}>
+          Ranking comment activity by post flair...
         </div>
       </div>
     );
@@ -460,16 +471,14 @@ export function App() {
   if (!isMod && (isPrivateScreen || !settings.publicDashboard)) {
     return (
       <div style={styles.container}>
-        {/* Toast Notification */}
         {toastMessage && <div style={styles.toast}>{toastMessage}</div>}
 
-        {/* Local Browser Sandbox Bar (when running offline / outside Reddit) */}
         {isLocalPreview && (
           <div style={styles.previewBanner}>
             <div style={styles.previewInfo}>
-              <span style={{ fontWeight: 700, color: '#38bdf8' }}>💻 Local Browser Sandbox:</span>
+              <span style={{ fontWeight: 700, color: '#38bdf8' }}>💻 Local Preview:</span>
               <span style={{ color: '#cbd5e1', marginLeft: 8 }}>
-                Currently in Regular User view with Private Mode active.
+                Viewing as Regular User (Private Mode Active).
               </span>
             </div>
             <button
@@ -483,7 +492,7 @@ export function App() {
                 }))
               }
             >
-              Switch Role: {userStatus?.isModerator ? '👑 Moderator View' : '👤 Regular User View'}
+              Switch Role: {userStatus?.isModerator ? '👑 Moderator' : '👤 Regular User'}
             </button>
           </div>
         )}
@@ -492,11 +501,8 @@ export function App() {
           <div style={styles.privateIcon}>🔒</div>
           <h2 style={styles.privateTitle}>Moderator-Only Analytics</h2>
           <p style={styles.privateSubtitle}>
-            The moderation team of <strong>r/{userStatus?.subredditName || report?.subredditName || 'this community'}</strong> has configured flair engagement metrics to be private.
+            The moderation team of <strong>r/{userStatus?.subredditName || report?.subredditName || 'this community'}</strong> has configured flair analytics to be private.
           </p>
-          <div style={styles.privateNotice}>
-            💡 If you are a moderator of this subreddit, ensure you are logged into your moderator account. Subreddit moderators can make this dashboard visible to the community in <strong>App Settings</strong>.
-          </div>
         </div>
       </div>
     );
@@ -515,19 +521,19 @@ export function App() {
   }
 
   const hasCustomGroups = Boolean(report.groupSummaries && report.groupSummaries.length > 0);
+  const showSearch = report.flairBreakdown.length > 6 || searchQuery.trim().length > 0;
 
   return (
     <div style={styles.container}>
-      {/* Toast Notification */}
       {toastMessage && <div style={styles.toast}>{toastMessage}</div>}
 
-      {/* Local Browser Sandbox Bar (when running offline / outside Reddit) */}
+      {/* Local Browser Sandbox Bar */}
       {isLocalPreview && (
         <div style={styles.previewBanner}>
           <div style={styles.previewInfo}>
-            <span style={{ fontWeight: 700, color: '#38bdf8' }}>💻 Local Browser Sandbox:</span>
+            <span style={{ fontWeight: 700, color: '#38bdf8' }}>💻 Local Sandbox:</span>
             <span style={{ color: '#cbd5e1', marginLeft: 8 }}>
-              Running in offline preview with 842 simulated posts. Test settings, groups, and search locally!
+              Previewing with {report.totalPostsAnalyzed} simulated posts.
             </span>
           </div>
           <button
@@ -541,378 +547,266 @@ export function App() {
               }))
             }
           >
-            Switch Role: {userStatus?.isModerator ? '👑 Moderator View' : '👤 Regular User View'}
+            Role: {userStatus?.isModerator ? '👑 Moderator' : '👤 User'}
           </button>
         </div>
       )}
 
-      {/* Header */}
-      <header style={styles.header}>
-        <div style={styles.headerLeft}>
-          <div style={styles.subTitleRow}>
+      {/* Main Card Container */}
+      <div style={styles.mainCard}>
+        {/* Top Header Row: Title + Metric Toggle + Mod Gear */}
+        <header style={styles.header}>
+          <div style={styles.headerLeft}>
             <h1 style={styles.title}>
-              r/{report.subredditName || 'community'} Flair Response & Impact Analyzer
+              💬 How Many Comments Do Posts Receive?
             </h1>
-            {isMod && <span style={styles.modBadge}>MODERATOR</span>}
-          </div>
-          <div style={styles.subtitle}>
-            Rolling {report.windowDays}-day window • Measuring how post flairs impact comment activity & response rates
-          </div>
-        </div>
-
-        <div style={styles.headerRight}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={styles.syncBadge}>
-              <span style={styles.pulseDot} />
-              <span>
-                {new Date(report.generatedAt).toLocaleDateString()}
-              </span>
-            </div>
-            <button
-              style={styles.expandButton}
-              onClick={handleToggleExpand}
-              title={isExpanded ? 'Exit expanded view' : 'Expand full screen'}
-            >
-              {isExpanded ? '🗗 Inline' : '⛶ Expand'}
-            </button>
-          </div>
-          {isMod && (
-            <button
-              style={syncing ? styles.buttonDisabled : styles.syncButton}
-              onClick={handleManualSync}
-              disabled={syncing}
-            >
-              {syncing ? 'Syncing...' : '↻ Sync Data Now'}
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Moderator Admin Overlay / Property Configuration Controls */}
-      {isMod && (
-        <section style={styles.modBanner}>
-          <div style={styles.modBannerInfo}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 600, color: '#ff4500' }}>🛡️ Mod Controls Active:</span>
-              <span style={settings.publicDashboard ? styles.visibilityPublicBadge : styles.visibilityPrivateBadge}>
-                {settings.publicDashboard ? '🌐 Community Visible (Public)' : '🔒 Mod-Only (Private)'}
-              </span>
-            </div>
-            <div style={{ color: '#a8aaab' }}>
-              {report.totalPostsAnalyzed} posts analyzed across {report.windowDays} days (max {settings.maxPosts}).
-              {hasCustomGroups ? ` ${report.groupSummaries?.length} custom group(s) configured.` : ' Direct flair view.'}
-              {syncStatus?.durationMs ? ` Last query took ${(syncStatus.durationMs / 1000).toFixed(2)}s.` : ''}
+            <div style={styles.subtitle}>
+              r/{report.subredditName} •{' '}
+              {metric === 'median' &&
+                `Ranked by typical (median) comments per post over the past ${report.windowDays} days (${report.totalPostsAnalyzed} posts)`}
+              {metric === 'avg' &&
+                `Ranked by average comments per post over the past ${report.windowDays} days (${report.totalPostsAnalyzed} posts)`}
+              {metric === 'total' &&
+                `Ranked by cumulative comments across all posts in the past ${report.windowDays} days (${report.overallTotalComments.toLocaleString()} total)`}
             </div>
           </div>
-          <div style={styles.modBannerActions}>
-            <button
-              style={styles.settingsButton}
-              onClick={() => {
-                setEditPublicDashboard(settings.publicDashboard ?? true);
-                setEditAutoSidebarWidget(settings.autoSidebarWidget ?? true);
-                setEditLookbackDays(settings.lookbackDays);
-                setEditMaxPosts(settings.maxPosts);
-                setEditMinThreshold(settings.minPostsThreshold);
-                setEditCustomGroupsRaw(settings.customGroupsRaw || '');
-                setSettingsModalOpen(true);
-              }}
-            >
-              ⚙️ App Settings & Groups
-            </button>
-            <button style={styles.sidebarButton} onClick={() => setSidebarModalOpen(true)}>
-              📌 Sidebar Widget
-            </button>
-            <button style={styles.secondaryButton} onClick={() => setExportModalOpen(true)}>
-              📥 Export Raw Data
-            </button>
-          </div>
-        </section>
-      )}
 
-      {/* Navigation Tabs (Keeps inline height compact so zero internal scrollbar) */}
-      <nav style={styles.navTabs}>
-        <button
-          style={activeTab === 'overview' ? styles.navTabActive : styles.navTab}
-          onClick={() => setActiveTab('overview')}
-        >
-          📊 Overview
-        </button>
-        <button
-          style={activeTab === 'rankings' ? styles.navTabActive : styles.navTab}
-          onClick={() => setActiveTab('rankings')}
-        >
-          📋 Flair Rankings ({report.flairBreakdown.length})
-        </button>
-        {hasCustomGroups && (
-          <button
-            style={activeTab === 'groups' ? styles.navTabActive : styles.navTab}
-            onClick={() => setActiveTab('groups')}
-          >
-            🏷️ Custom Groups ({report.groupSummaries?.length})
-          </button>
-        )}
-      </nav>
-
-      {/* Subreddit Response Rate Overview Cards */}
-      {activeTab === 'overview' && (
-        <section style={styles.overviewCard}>
-          {report.totalPostsAnalyzed === 0 ? (
-            <div style={styles.emptyStateBanner}>
-              <div style={{ fontSize: 32, marginBottom: 10 }}>🌱</div>
-              <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 16 }}>
-                No Post Activity Detected Yet
-              </div>
-              <div style={{ color: '#94a3b8', fontSize: 13, marginTop: 6, maxWidth: 480, margin: '6px auto 0', lineHeight: 1.5 }}>
-                <strong>r/{report.subredditName}</strong> hasn't had any submissions in the last {report.windowDays} days. Once posts with flairs are created, click <strong>↻ Sync Data Now</strong> to calculate response rates!
-              </div>
-            </div>
-          ) : (
-            <>
-              <div style={styles.overviewHeader}>
-                <div style={styles.overviewIconBox}>📈</div>
-                <div>
-                  <div style={styles.overviewCardTitle}>Community Response Rate Overview</div>
-                  <div style={styles.overviewCardSubtitle}>
-                    Benchmarking how topic and post flairs influence community participation and discussion rates
-                  </div>
-                </div>
-              </div>
-
-              <div style={styles.overviewMetricsGrid}>
-                <div style={styles.overviewMetricBox}>
-                  <div style={styles.metricLabel}>Community Baseline (Median)</div>
-                  <div style={{ ...styles.metricValue, color: '#f8fafc' }}>
-                    {report.overallMedianComments}
-                    <span style={styles.metricUnit}> comments/post</span>
-                  </div>
-                  <div style={styles.metricSub}>
-                    Median across all {report.totalPostsAnalyzed} submissions
-                  </div>
-                </div>
-
-                <div style={styles.overviewMetricBox}>
-                  <div style={styles.metricLabel}>Highest Response Flair</div>
-                  <div style={{ ...styles.metricValue, color: '#10b981' }}>
-                    {report.topResponseFlair ? `${report.topResponseFlair.medianComments}` : 'N/A'}
-                    <span style={styles.metricUnit}> comments</span>
-                  </div>
-                  <div style={styles.metricSub}>
-                    {report.topResponseFlair
-                      ? `${report.topResponseFlair.flairText} (${report.topResponseFlair.postCount} posts)`
-                      : 'No flairs'}
-                  </div>
-                </div>
-
-                <div style={styles.overviewMetricBox}>
-                  <div style={styles.metricLabel}>Lowest Response Flair</div>
-                  <div style={{ ...styles.metricValue, color: '#ff585b' }}>
-                    {report.lowestResponseFlair ? `${report.lowestResponseFlair.medianComments}` : 'N/A'}
-                    <span style={styles.metricUnit}> comments</span>
-                  </div>
-                  <div style={styles.metricSub}>
-                    {report.lowestResponseFlair
-                      ? `${report.lowestResponseFlair.flairText} (${report.lowestResponseFlair.postCount} posts)`
-                      : 'No flairs'}
-                  </div>
-                </div>
-
-                <div style={styles.overviewMetricBox}>
-                  <div style={styles.metricLabel}>Total Comments Analyzed</div>
-                  <div style={{ ...styles.metricValue, color: '#38bdf8' }}>
-                    {report.overallTotalComments.toLocaleString()}
-                    <span style={styles.metricUnit}> comments</span>
-                  </div>
-                  <div style={styles.metricSub}>
-                    Avg {report.overallAvgComments} comments/post
-                  </div>
-                </div>
-              </div>
-
-              <div style={styles.rationaleBox}>
-                <span style={{ fontWeight: 600, color: '#d7dadc' }}>💡 Response Rate Insight: </span>
-                <span>
-                  Post flairs directly influence whether submissions spark active community dialogue or get
-                  ignored. By focusing on median response rates, extreme viral spikes are filtered out,
-                  providing an accurate measure of typical user engagement per post flair.
-                </span>
-              </div>
-            </>
-          )}
-        </section>
-      )}
-
-      {/* Custom Flair Grouping Tabs (Rendered ONLY if moderator has configured custom groups) */}
-      {hasCustomGroups && activeTab === 'groups' && (
-        <section style={styles.groupSection}>
-          <div style={styles.groupTabsHeader}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Custom Flair Groups:
-            </span>
-          </div>
-          <div style={styles.groupPillsWrapper}>
-            <button
-              style={selectedGroup === 'all' ? styles.groupPillActive : styles.groupPill}
-              onClick={() => setSelectedGroup('all')}
-            >
-              All Flairs ({report.flairBreakdown.length})
-            </button>
-            {report.groupSummaries?.map((g) => (
+          <div style={styles.headerControls}>
+            {/* Metric Toggle Pills */}
+            <div style={styles.metricToggleGroup}>
               <button
-                key={g.groupName}
-                style={selectedGroup === g.groupName ? styles.groupPillActive : styles.groupPill}
-                onClick={() => setSelectedGroup(g.groupName)}
+                style={metric === 'median' ? styles.metricPillActive : styles.metricPill}
+                onClick={() => setMetric('median')}
+                title="Typical comments per post (filters out single viral outlier posts)"
               >
-                {g.groupName} ({g.flairCount})
+                Median (Typical)
               </button>
-            ))}
-            {ungroupedCount > 0 && (
               <button
-                style={selectedGroup === '__ungrouped__' ? styles.groupPillActive : styles.groupPill}
-                onClick={() => setSelectedGroup('__ungrouped__')}
+                style={metric === 'avg' ? styles.metricPillActive : styles.metricPill}
+                onClick={() => setMetric('avg')}
+                title="Mathematical average comments per post"
               >
-                Ungrouped ({ungroupedCount})
+                Average
+              </button>
+              <button
+                style={metric === 'total' ? styles.metricPillActive : styles.metricPill}
+                onClick={() => setMetric('total')}
+                title="Total comments across all posts with this flair"
+              >
+                Total
+              </button>
+            </div>
+
+            <button
+              style={styles.iconButton}
+              onClick={handleToggleExpand}
+              title={isExpanded ? 'Exit full screen' : 'Expand view'}
+            >
+              {isExpanded ? '🗗' : '⛶'}
+            </button>
+
+            {isMod && (
+              <button
+                style={modMenuOpen ? styles.modMenuButtonActive : styles.modMenuButton}
+                onClick={() => setModMenuOpen((prev) => !prev)}
+              >
+                ⚙️ Mod Menu
               </button>
             )}
           </div>
+        </header>
 
-          {/* Active Group Highlight Banner */}
-          {activeGroupSummary && (
-            <div style={styles.activeGroupBox}>
-              <div style={styles.activeGroupTopRow}>
-                <div>
-                  <span style={styles.activeGroupTitle}>{activeGroupSummary.groupName}</span>
-                  <span style={styles.activeGroupSubtitle}>
-                    {activeGroupSummary.totalPosts} total submissions across {activeGroupSummary.flairCount} flairs ({activeGroupSummary.flairs.join(', ')})
-                  </span>
-                </div>
-                <div style={styles.activeGroupStats}>
-                  <div style={styles.activeGroupStatItem}>
-                    <span style={styles.activeGroupStatLabel}>Group Median:</span>
-                    <span style={styles.activeGroupStatValue}>{activeGroupSummary.medianComments} comments</span>
-                  </div>
-                  <div style={styles.activeGroupStatItem}>
-                    <span style={styles.activeGroupStatLabel}>Impact vs Baseline:</span>
-                    {getBaselineDeltaBadge(activeGroupSummary.deltaVsCommunityBaselinePct)}
-                  </div>
-                </div>
+        {/* Collapsible Moderator Drawer */}
+        {isMod && modMenuOpen && (
+          <div style={styles.modDrawer}>
+            <div style={styles.modDrawerLeft}>
+              <span style={settings.publicDashboard ? styles.visibilityPublicBadge : styles.visibilityPrivateBadge}>
+                {settings.publicDashboard ? '🌐 Public' : '🔒 Mod-Only'}
+              </span>
+              <span style={{ color: '#94a3b8', fontSize: 12 }}>
+                Updated {new Date(report.generatedAt).toLocaleDateString()}
+              </span>
+            </div>
+            <div style={styles.modDrawerActions}>
+              <button
+                style={syncing ? styles.buttonDisabled : styles.modActionBtn}
+                onClick={handleManualSync}
+                disabled={syncing}
+              >
+                {syncing ? '⏳ Syncing...' : '↻ Sync Now'}
+              </button>
+              <button
+                style={styles.modActionBtn}
+                onClick={() => {
+                  setEditPublicDashboard(settings.publicDashboard ?? true);
+                  setEditAutoSidebarWidget(settings.autoSidebarWidget ?? true);
+                  setEditLookbackDays(settings.lookbackDays);
+                  setEditMaxPosts(settings.maxPosts);
+                  setEditMinThreshold(settings.minPostsThreshold);
+                  setEditCustomGroupsRaw(settings.customGroupsRaw || '');
+                  setSettingsModalOpen(true);
+                }}
+              >
+                ⚙️ Settings
+              </button>
+              <button style={styles.modActionBtnAccent} onClick={() => setSidebarModalOpen(true)}>
+                📌 Sidebar Widget
+              </button>
+              <button style={styles.modActionBtn} onClick={() => setExportModalOpen(true)}>
+                📥 Export
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Optional Group Filter & Search Bar */}
+        {(hasCustomGroups || showSearch) && (
+          <div style={styles.filterBar}>
+            {hasCustomGroups ? (
+              <div style={styles.groupPillsWrapper}>
+                <button
+                  style={selectedGroup === 'all' ? styles.groupPillActive : styles.groupPill}
+                  onClick={() => setSelectedGroup('all')}
+                >
+                  All Flairs ({report.flairBreakdown.length})
+                </button>
+                {report.groupSummaries?.map((g) => (
+                  <button
+                    key={g.groupName}
+                    style={selectedGroup === g.groupName ? styles.groupPillActive : styles.groupPill}
+                    onClick={() => setSelectedGroup(g.groupName)}
+                  >
+                    {g.groupName} ({g.flairCount})
+                  </button>
+                ))}
+                {ungroupedCount > 0 && (
+                  <button
+                    style={selectedGroup === '__ungrouped__' ? styles.groupPillActive : styles.groupPill}
+                    onClick={() => setSelectedGroup('__ungrouped__')}
+                  >
+                    Other ({ungroupedCount})
+                  </button>
+                )}
               </div>
-            </div>
-          )}
-        </section>
-      )}
+            ) : (
+              <div />
+            )}
 
-      {/* Table Controls (Search & Sort) & Flair Table */}
-      {(activeTab === 'rankings' || (hasCustomGroups && activeTab === 'groups')) && (
-        <>
-          <section style={styles.tableControls}>
-            <div style={styles.flairCountBadge}>
-              Showing <strong>{filteredFlairs.length}</strong> of {report.flairBreakdown.length} flairs
-            </div>
-
-            <div style={styles.filterActions}>
+            {showSearch && (
               <input
                 type="text"
-                placeholder="Search flairs..."
+                placeholder="Filter flairs..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 style={styles.searchInput}
               />
+            )}
+          </div>
+        )}
 
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as any)}
-                style={styles.selectInput}
-              >
-                <option value="median_comments">Sort by Median Response</option>
-                <option value="baseline_delta">Sort by Impact (vs Baseline)</option>
-                <option value="volume">Sort by Post Volume</option>
-                <option value="avg_comments">Sort by Avg Comments</option>
-                <option value="score">Sort by Avg Score</option>
-              </select>
+        {/* Ranked Horizontal Bar Leaderboard */}
+        {report.totalPostsAnalyzed === 0 ? (
+          <div style={styles.emptyStateBanner}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>🌱</div>
+            <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 15 }}>
+              No Post Activity Yet
             </div>
-          </section>
+            <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>
+              Once posts with flairs are submitted on <strong>r/{report.subredditName}</strong>, their comment rankings will appear here.
+            </div>
+          </div>
+        ) : rankedFlairs.length === 0 ? (
+          <div style={styles.emptyStateBanner}>
+            <div style={{ color: '#94a3b8', fontSize: 13 }}>
+              No flairs match "{searchQuery}".
+            </div>
+          </div>
+        ) : (
+          <div style={styles.leaderboardList}>
+            {(() => {
+              let benchmarkInserted = false;
+              const elements: React.ReactNode[] = [];
 
-          <section style={styles.tableWrapper}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={{ ...styles.th, width: '28%' }}>Flair Name</th>
-                  <th style={{ ...styles.th, width: '15%', textAlign: 'right' }}>Submissions</th>
-                  <th style={{ ...styles.th, width: '27%' }}>Median Response</th>
-                  <th style={{ ...styles.th, width: '16%', textAlign: 'center' }}>vs Baseline</th>
-                  <th style={{ ...styles.th, width: '7%', textAlign: 'right' }}>Avg Comments</th>
-                  <th style={{ ...styles.th, width: '7%', textAlign: 'right' }}>Avg Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredFlairs.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} style={styles.emptyRow}>
-                      No flairs match your search or filter criteria.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredFlairs.map((flair) => {
-                    const barWidth = Math.max(
-                      Math.min(Math.round((flair.medianComments / maxMedianComments) * 100), 100),
-                      2
-                    );
-                    return (
-                      <tr key={flair.flairText} style={styles.tr}>
-                        <td style={styles.td}>
-                          <span style={styles.flairPill}>{flair.flairText}</span>
-                          {flair.assignedGroup && (
-                            <span style={styles.assignedGroupBadge}>{flair.assignedGroup}</span>
-                          )}
-                        </td>
-                        <td style={{ ...styles.td, textAlign: 'right', fontWeight: 600 }}>
-                          {flair.postCount}
-                          <span style={styles.percentageText}>
-                            {' '}
-                            ({Math.round((flair.postCount / report.totalPostsAnalyzed) * 100)}%)
-                          </span>
-                        </td>
-                        <td style={styles.td}>
-                          <div style={styles.barContainer}>
-                            <div
-                              style={{
-                                ...styles.barFill,
-                                width: `${barWidth}%`,
-                                backgroundColor:
-                                  flair.deltaVsCommunityBaselinePct !== null && flair.deltaVsCommunityBaselinePct > 0
-                                    ? '#10b981'
-                                    : flair.deltaVsCommunityBaselinePct !== null && flair.deltaVsCommunityBaselinePct < 0
-                                    ? '#f59e0b'
-                                    : '#38bdf8'
-                              }}
-                            />
-                            <span style={styles.barNumber}>{flair.medianComments}</span>
-                          </div>
-                        </td>
-                        <td style={{ ...styles.td, textAlign: 'center' }}>
-                          {getBaselineDeltaBadge(flair.deltaVsCommunityBaselinePct)}
-                        </td>
-                        <td style={{ ...styles.td, textAlign: 'right' }}>{flair.avgComments}</td>
-                        <td style={{ ...styles.td, textAlign: 'right' }}>{flair.avgScore}</td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </section>
-        </>
-      )}
+              rankedFlairs.forEach((item, idx) => {
+                const val = getMetricValue(item, metric);
+                const pct = Math.max(5, Math.round((val / maxMetricValue) * 100));
+                const color = getFlairColor(item.flairText, idx);
 
-      {/* Footer Info */}
-      <footer style={styles.footer}>
-        <div>
-          Tracking data points: Post ID, Flair text, Comment count, Post score, Upvote ratio & Creation date.
-        </div>
-        <div style={{ marginTop: 4 }}>
-          Native Reddit Devvit App • Configurable via Subreddit App Settings & Redis cache
-        </div>
-      </footer>
+                if (
+                  !benchmarkInserted &&
+                  searchQuery.trim() === '' &&
+                  selectedGroup === 'all' &&
+                  val < benchmarkInfo.value &&
+                  idx > 0
+                ) {
+                  benchmarkInserted = true;
+                  elements.push(
+                    <div key="__baseline_divider__" style={styles.benchmarkRow}>
+                      <div style={styles.benchmarkLine} />
+                      <span style={styles.benchmarkLabel}>{benchmarkInfo.label}</span>
+                      <div style={styles.benchmarkLine} />
+                    </div>
+                  );
+                }
+
+                const rankBadgeStyle =
+                  idx === 0
+                    ? styles.rankGold
+                    : idx === 1
+                    ? styles.rankSilver
+                    : idx === 2
+                    ? styles.rankBronze
+                    : styles.rankDefault;
+
+                elements.push(
+                  <div key={item.flairText} style={styles.barRow}>
+                    {/* Rank Badge */}
+                    <div style={rankBadgeStyle}>#{idx + 1}</div>
+
+                    {/* Flair Pill */}
+                    <div style={styles.flairCell}>
+                      <span
+                        style={{
+                          ...styles.flairBadge,
+                          backgroundColor: color
+                        }}
+                        title={item.flairText}
+                      >
+                        {item.flairText}
+                      </span>
+                    </div>
+
+                    {/* Horizontal Bar + Metric Value */}
+                    <div style={styles.barTrackWrapper}>
+                      <div style={styles.barTrack}>
+                        <div
+                          style={{
+                            ...styles.barFill,
+                            width: `${pct}%`,
+                            backgroundColor: color
+                          }}
+                        />
+                      </div>
+                      <div style={styles.metricReadout}>
+                        {metric === 'total'
+                          ? `${val.toLocaleString()} comments`
+                          : `${val} comments / post`}
+                      </div>
+                    </div>
+
+                    {/* Post Sample Size */}
+                    <div style={styles.sampleCell}>
+                      {item.postCount} {item.postCount === 1 ? 'post' : 'posts'}
+                    </div>
+                  </div>
+                );
+              });
+
+              return elements;
+            })()}
+          </div>
+        )}
+      </div>
 
       {/* App Properties & Configuration Modal (Moderators) */}
       {settingsModalOpen && (
@@ -921,10 +815,10 @@ export function App() {
             <div style={styles.modalHeader}>
               <div>
                 <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0, color: '#f8fafc' }}>
-                  ⚙️ Subreddit App Properties & Settings
+                  ⚙️ Subreddit App Settings
                 </h2>
                 <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>
-                  Configure ingestion parameters and custom flair groupings for this subreddit.
+                  Configure lookback days, visibility, and optional flair groups.
                 </div>
               </div>
               <button style={styles.closeButton} onClick={() => setSettingsModalOpen(false)}>
@@ -948,8 +842,8 @@ export function App() {
                     </div>
                     <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 2 }}>
                       {editPublicDashboard
-                        ? 'Active: Community members can view this interactive dashboard and flair response rates.'
-                        : 'Inactive (Private): Only subreddit moderators can view analytics. Regular members see a lock screen.'}
+                        ? 'Active: All community members can view flair comment rankings.'
+                        : 'Private: Only subreddit moderators can view this dashboard.'}
                     </div>
                   </div>
                 </label>
@@ -970,8 +864,8 @@ export function App() {
                     </div>
                     <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 2 }}>
                       {editAutoSidebarWidget
-                        ? 'Active: Automatically keep a "Flair Analytics" button widget in your subreddit sidebar linking here.'
-                        : 'Disabled: Subreddit sidebar will not be automatically updated with a dashboard button.'}
+                        ? 'Active: Automatically maintain a "Flair Analytics" button widget in your subreddit sidebar.'
+                        : 'Disabled: Subreddit sidebar will not be automatically updated.'}
                     </div>
                   </div>
                 </label>
@@ -988,23 +882,11 @@ export function App() {
                     onChange={(e) => setEditLookbackDays(Number(e.target.value))}
                     style={editLookbackDays > 365 || editLookbackDays < 1 ? styles.textInputError : styles.textInput}
                   />
-                  {editLookbackDays > 365 ? (
-                    <div style={styles.warningNotice}>
-                      ⚠️ <strong>Wide Window:</strong> Periods over 365 days are limited by Reddit's 1,000 post listing ceiling on active communities.
-                    </div>
-                  ) : editLookbackDays < 7 ? (
-                    <div style={styles.warningNotice}>
-                      ⚠️ <strong>Short Window:</strong> A lookback of at least 7–30 days is recommended to capture community discussion rhythms.
-                    </div>
-                  ) : (
-                    <div style={styles.helpText}>
-                      How far back in time to scan submissions (1 to 365). Default: 90
-                    </div>
-                  )}
+                  <div style={styles.helpText}>Days in the past to scan (1 to 365). Default: 90</div>
                 </div>
 
                 <div style={styles.formField}>
-                  <label style={styles.label}>Max Submissions to Ingest:</label>
+                  <label style={styles.label}>Max Posts to Scan:</label>
                   <input
                     type="number"
                     min={50}
@@ -1013,135 +895,60 @@ export function App() {
                     onChange={(e) => setEditMaxPosts(Number(e.target.value))}
                     style={editMaxPosts > 1000 || editMaxPosts < 50 ? styles.textInputError : styles.textInput}
                   />
-                  {editMaxPosts > 1000 ? (
-                    <div style={styles.errorNotice}>
-                      ⛔ <strong>Reddit API Limit (1,000 Cap):</strong> Reddit strictly caps all subreddit listings at 1,000 items. Requests above 1,000 cannot be queried.
-                    </div>
-                  ) : editMaxPosts < 50 ? (
-                    <div style={styles.warningNotice}>
-                      ⚠️ <strong>Low Sample Size:</strong> At least 50 posts recommended for statistically reliable medians.
-                    </div>
-                  ) : (
-                    <div style={styles.helpText}>
-                      Maximum submissions to fetch (50 to 1,000). Reddit listings enforce a strict 1,000-item ceiling.
-                    </div>
-                  )}
-                </div>
-
-                <div style={styles.formField}>
-                  <label style={styles.label}>Min Posts for Highlights:</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={editMinThreshold}
-                    onChange={(e) => setEditMinThreshold(Number(e.target.value))}
-                    style={editMinThreshold < 1 ? styles.textInputError : styles.textInput}
-                  />
-                  {editMinThreshold < 1 ? (
-                    <div style={styles.errorNotice}>
-                      ⛔ Must be at least 1 post.
-                    </div>
-                  ) : (
-                    <div style={styles.helpText}>
-                      Minimum post count required for Highest/Lowest Response cards. Default: 5
-                    </div>
-                  )}
+                  <div style={styles.helpText}>50 to 1,000 (Reddit API listing cap).</div>
                 </div>
               </div>
 
               <div style={styles.formGroup}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <label style={styles.label}>Custom Flair Groupings (Optional):</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <label style={{ ...styles.label, marginBottom: 0 }}>
+                    Custom Flair Groups (Optional):
+                  </label>
+                  <div style={{ display: 'flex', gap: 6 }}>
                     <button
                       type="button"
-                      style={styles.tinyButtonPrimary}
+                      style={styles.templateBtnAccent}
                       onClick={handlePopulateSubredditFlairs}
-                      title="Automatically populate groups using this subreddit's detected flairs"
                     >
-                      ✨ Auto-Fill Subreddit Flairs
+                      Auto-Group Subreddit Flairs ({discoveredFlairs.length})
                     </button>
                     <button
                       type="button"
-                      style={styles.tinyButton}
-                      onClick={handleClearGroups}
+                      style={styles.templateBtn}
+                      onClick={() => setEditCustomGroupsRaw('')}
                     >
                       Clear
                     </button>
                   </div>
                 </div>
-                <textarea
-                  value={editCustomGroupsRaw}
-                  onChange={(e) => setEditCustomGroupsRaw(e.target.value)}
-                  placeholder="Format: GroupName: flair1, flair2&#10;Example:&#10;Community Help: Question, Technical Help, Advice&#10;Promotions: Vendor, Showcase, Deals"
-                  rows={4}
-                  style={styles.settingsTextarea}
-                />
-                <div style={styles.helpText}>
-                  Enter one group per line in <code>GroupName: flair1, flair2</code> format. If left blank, flairs will be displayed directly without grouping.
-                </div>
 
-                {/* Subreddit Flair Chips (Click to Insert) */}
                 {discoveredFlairs.length > 0 && (
-                  <div style={styles.flairChipsBox}>
-                    <div style={styles.flairChipsHeader}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        Subreddit Flairs Detected ({discoveredFlairs.length}) — Click to insert:
-                      </span>
+                  <div style={styles.flairPickerBox}>
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>
+                      Click a flair to insert at cursor:
                     </div>
-                    <div style={styles.flairChipsGrid}>
-                      {discoveredFlairs.map((flair) => (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {discoveredFlairs.map((f) => (
                         <button
-                          key={flair}
+                          key={f}
                           type="button"
-                          style={styles.flairChip}
-                          onClick={() => handleInsertFlair(flair)}
-                          title={`Click to append "${flair}" to editor`}
+                          style={styles.flairChipBtn}
+                          onClick={() => handleInsertFlair(f)}
                         >
-                          + {flair}
+                          + {f}
                         </button>
                       ))}
                     </div>
                   </div>
                 )}
-              </div>
 
-              {/* Platform Constraints & Limits Callout Box */}
-              <div style={styles.constraintsCard}>
-                <div style={styles.constraintsHeader}>
-                  <span style={{ fontSize: 14 }}>🛑</span>
-                  <span style={{ fontWeight: 700, color: '#f8fafc', fontSize: 13 }}>
-                    Reddit API &amp; Devvit Platform Restrictions
-                  </span>
-                </div>
-                <div style={styles.constraintList}>
-                  <div style={styles.constraintItem}>
-                    <span style={{ color: '#f87171', fontWeight: 700 }}>• 1,000 Post Hard Ceiling:</span>
-                    <span style={{ color: '#cbd5e1', marginLeft: 6 }}>
-                      Reddit's listing architecture (<code>/new</code>, <code>/hot</code>, <code>/top</code>) returns <code>after: null</code> past 1,000 posts. It is physically impossible to paginate further via standard APIs.
-                    </span>
-                  </div>
-                  <div style={styles.constraintItem}>
-                    <span style={{ color: '#fbbf24', fontWeight: 700 }}>• Effective Window Cutoff:</span>
-                    <span style={{ color: '#cbd5e1', marginLeft: 6 }}>
-                      Syncing stops at whichever limit is reached first: your chosen <strong>lookback days</strong> or <strong>1,000 submissions</strong>. On active subreddits, 1,000 posts may only cover the past week or month.
-                    </span>
-                  </div>
-                  <div style={styles.constraintItem}>
-                    <span style={{ color: '#38bdf8', fontWeight: 700 }}>• Rate Limits &amp; Execution Timeouts:</span>
-                    <span style={{ color: '#cbd5e1', marginLeft: 6 }}>
-                      Ingestion streams 100 posts per page (10 requests max), completing in ~2 seconds to guarantee zero Reddit 429 rate limit triggers and avoid Devvit worker execution timeouts.
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div style={styles.nativeSettingsNotice}>
-                <span style={{ fontWeight: 600, color: '#38bdf8' }}>ℹ️ Reddit Native Mod Tools: </span>
-                <span>
-                  These same properties are also registered in <code>devvit.json</code> and accessible in your Reddit subreddit settings under <strong>Mod Tools &gt; Installed Apps &gt; flair-impact &gt; App Settings</strong>.
-                </span>
+                <textarea
+                  rows={3}
+                  placeholder={'Questions & Help: Question, Technical Help\nCommunity: Discussion, Showcase'}
+                  value={editCustomGroupsRaw}
+                  onChange={(e) => setEditCustomGroupsRaw(e.target.value)}
+                  style={styles.textareaInput}
+                />
               </div>
             </div>
 
@@ -1150,9 +957,8 @@ export function App() {
                 style={savingSettings || validationError ? styles.buttonDisabled : styles.primaryButton}
                 onClick={handleSaveSettings}
                 disabled={savingSettings || Boolean(validationError)}
-                title={validationError || undefined}
               >
-                {savingSettings ? 'Saving & Syncing...' : validationError ? '⚠️ Fix Errors to Save' : '💾 Save & Sync Now'}
+                {savingSettings ? 'Saving & Syncing...' : '💾 Save & Sync Now'}
               </button>
               <button style={styles.secondaryButton} onClick={() => setSettingsModalOpen(false)}>
                 Cancel
@@ -1223,7 +1029,6 @@ export function App() {
             </div>
 
             <div style={styles.modalBody}>
-              {/* Method 1: Automatic 1-Click Sync */}
               <div style={styles.sidebarSectionCard}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <span style={{ fontSize: 16 }}>🚀</span>
@@ -1232,18 +1037,16 @@ export function App() {
                   </div>
                 </div>
                 <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
-                  The app will communicate directly with Reddit's Widget API to create or update a dedicated <strong>"Flair Analytics"</strong> button widget in <strong>r/{currentSubredditName}</strong>'s sidebar.
+                  Creates or updates a <strong>"Flair Analytics"</strong> button widget in <strong>r/{currentSubredditName}</strong>'s sidebar.
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                  <button
-                    style={syncingWidget ? styles.buttonDisabled : styles.syncWidgetButton}
-                    onClick={handleSyncSidebarWidget}
-                    disabled={syncingWidget}
-                  >
-                    {syncingWidget ? '⏳ Connecting to Reddit Widget API...' : '⚡ Auto-Add Widget to Sidebar'}
-                  </button>
-                </div>
+                <button
+                  style={syncingWidget ? styles.buttonDisabled : styles.syncWidgetButton}
+                  onClick={handleSyncSidebarWidget}
+                  disabled={syncingWidget}
+                >
+                  {syncingWidget ? '⏳ Connecting to Reddit Widget API...' : '⚡ Auto-Add Widget to Sidebar'}
+                </button>
 
                 {widgetSyncResult && (
                   <div
@@ -1258,7 +1061,6 @@ export function App() {
                 )}
               </div>
 
-              {/* Method 2: Direct Links & 3-Step Mod Tools Guide */}
               <div style={styles.sidebarSectionCard}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <span style={{ fontSize: 16 }}>🛠️</span>
@@ -1266,11 +1068,7 @@ export function App() {
                     Method 2: Manual Sidebar Widget (Mod Tools)
                   </div>
                 </div>
-                <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>
-                  You can also add or customize a button or text widget anytime via Reddit's native Community Appearance controls.
-                </div>
 
-                {/* Direct Link Copy Field */}
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontWeight: 600, color: '#e2e8f0', fontSize: 12, marginBottom: 4 }}>
                     🔗 Direct Dashboard Post URL:
@@ -1288,8 +1086,7 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Markdown Snippet Copy Field */}
-                <div style={{ marginBottom: 16 }}>
+                <div style={{ marginBottom: 14 }}>
                   <div style={{ fontWeight: 600, color: '#e2e8f0', fontSize: 12, marginBottom: 4 }}>
                     📝 Markdown Widget Code:
                   </div>
@@ -1306,38 +1103,25 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Step-by-Step Instructions */}
                 <div style={styles.stepsContainer}>
                   <div style={styles.stepItem}>
                     <div style={styles.stepBadge}>1</div>
-                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
-                      Open <strong>Mod Tools</strong> →{' '}
+                    <div style={{ color: '#cbd5e1', fontSize: 12 }}>
+                      Open{' '}
                       <a
                         href={`https://www.reddit.com/r/${currentSubredditName}/about/edit?page=widgets`}
                         target="_blank"
                         rel="noreferrer"
                         style={{ color: '#38bdf8', textDecoration: 'underline' }}
                       >
-                        Community Appearance &gt; Sidebar Widgets ↗
+                        Mod Tools &gt; Sidebar Widgets ↗
                       </a>
                     </div>
                   </div>
                   <div style={styles.stepItem}>
                     <div style={styles.stepBadge}>2</div>
-                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
-                      Click <strong>Add Widget</strong> and select <strong>Button</strong> (or <strong>Text Area</strong>).
-                    </div>
-                  </div>
-                  <div style={styles.stepItem}>
-                    <div style={styles.stepBadge}>3</div>
-                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
-                      Set the title to <strong>Flair Analytics</strong>, add a button labeled <strong>📊 View Flair Dashboard</strong>, and paste the URL copied above.
-                    </div>
-                  </div>
-                  <div style={styles.stepItem}>
-                    <div style={styles.stepBadge}>4</div>
-                    <div style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.4 }}>
-                      Click <strong>Save</strong>! The widget will instantly appear in the right-hand sidebar for all visitors.
+                    <div style={{ color: '#cbd5e1', fontSize: 12 }}>
+                      Click <strong>Add Widget</strong> → select <strong>Button</strong>, paste the URL above, and click <strong>Save</strong>.
                     </div>
                   </div>
                 </div>
@@ -1358,24 +1142,30 @@ export function App() {
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    maxWidth: 960,
+    maxWidth: 860,
     margin: '0 auto',
-    padding: '12px 14px',
+    padding: '10px 12px',
     color: '#d7dadc',
     fontSize: 13,
     lineHeight: 1.4
+  },
+  mainCard: {
+    backgroundColor: '#161617',
+    border: '1px solid #272729',
+    borderRadius: 12,
+    padding: '14px 16px'
   },
   loadingContainer: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 320,
+    minHeight: 280,
     color: '#818384'
   },
   spinner: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     border: '3px solid #272729',
     borderTop: '3px solid #ff4500',
     borderRadius: '50%',
@@ -1386,67 +1176,56 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     backgroundColor: '#1a1a1b',
     borderRadius: 8,
-    margin: '40px auto',
-    maxWidth: 480
+    margin: '32px auto',
+    maxWidth: 460
   },
   privateScreenBox: {
     backgroundColor: '#1a1a1b',
     border: '1px solid #343536',
     borderRadius: 12,
-    padding: '48px 24px',
+    padding: '40px 24px',
     textAlign: 'center',
-    maxWidth: 580,
-    margin: '40px auto'
+    maxWidth: 520,
+    margin: '32px auto'
   },
   privateIcon: {
-    fontSize: 48,
-    marginBottom: 16
+    fontSize: 42,
+    marginBottom: 12
   },
   privateTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: 700,
     color: '#f8fafc',
-    marginBottom: 10
+    marginBottom: 8
   },
   privateSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#94a3b8',
-    lineHeight: 1.6,
-    marginBottom: 24
-  },
-  privateNotice: {
-    backgroundColor: '#121213',
-    border: '1px solid #272729',
-    borderRadius: 8,
-    padding: '12px 16px',
-    fontSize: 12,
-    color: '#64748b',
-    lineHeight: 1.5,
-    textAlign: 'left'
+    lineHeight: 1.5
   },
   previewBanner: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 8,
     backgroundColor: '#0c4a6e33',
     border: '1px solid #0284c7',
     borderRadius: 8,
-    padding: '8px 14px',
-    marginBottom: 12
+    padding: '6px 12px',
+    marginBottom: 10
   },
   previewInfo: {
-    fontSize: 13
+    fontSize: 12
   },
   previewToggle: {
     backgroundColor: '#0284c7',
     color: '#ffffff',
     border: 'none',
     borderRadius: 6,
-    padding: '6px 14px',
+    padding: '4px 10px',
     fontSize: 12,
-    fontWeight: 700,
+    fontWeight: 600,
     cursor: 'pointer'
   },
   header: {
@@ -1455,73 +1234,18 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'flex-start',
     flexWrap: 'wrap',
     gap: 10,
-    marginBottom: 10
+    marginBottom: 12,
+    paddingBottom: 10,
+    borderBottom: '1px solid #272729'
   },
   headerLeft: {
     flex: 1,
-    minWidth: 260
-  },
-  headerRight: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    gap: 6
-  },
-  expandButton: {
-    backgroundColor: '#1e293b',
-    color: '#38bdf8',
-    border: '1px solid #0284c7',
-    borderRadius: 6,
-    padding: '3px 10px',
-    fontSize: 11,
-    fontWeight: 700,
-    cursor: 'pointer'
-  },
-  navTabs: {
-    display: 'flex',
-    gap: 8,
-    marginBottom: 12,
-    borderBottom: '1px solid #272729',
-    paddingBottom: 8
-  },
-  navTab: {
-    backgroundColor: '#1a1a1b',
-    color: '#94a3b8',
-    border: '1px solid #343536',
-    borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer'
-  },
-  navTabActive: {
-    backgroundColor: '#ff4500',
-    color: '#ffffff',
-    border: '1px solid #ff4500',
-    borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: 'pointer'
-  },
-  emptyStateBanner: {
-    padding: '28px 16px',
-    textAlign: 'center',
-    backgroundColor: '#121213',
-    border: '1px dashed #343536',
-    borderRadius: 8
-  },
-  subTitleRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    flexWrap: 'wrap'
+    minWidth: 240
   },
   title: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: 700,
     color: '#f8fafc',
-    letterSpacing: '-0.3px',
     margin: 0
   },
   subtitle: {
@@ -1529,64 +1253,315 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#94a3b8',
     marginTop: 2
   },
-  modBadge: {
-    fontSize: 10,
+  headerControls: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap'
+  },
+  metricToggleGroup: {
+    display: 'inline-flex',
+    backgroundColor: '#0f1011',
+    border: '1px solid #272729',
+    borderRadius: 8,
+    padding: 2,
+    gap: 2
+  },
+  metricPill: {
+    backgroundColor: 'transparent',
+    color: '#94a3b8',
+    border: 'none',
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  metricPillActive: {
+    backgroundColor: '#0284c7',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
     fontWeight: 700,
+    cursor: 'pointer'
+  },
+  iconButton: {
+    backgroundColor: '#272729',
+    color: '#cbd5e1',
+    border: '1px solid #343536',
+    borderRadius: 6,
+    padding: '4px 8px',
+    fontSize: 12,
+    cursor: 'pointer'
+  },
+  modMenuButton: {
+    backgroundColor: '#272729',
+    color: '#f8fafc',
+    border: '1px solid #3f3f46',
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  modMenuButtonActive: {
     backgroundColor: '#ff4500',
     color: '#ffffff',
-    padding: '2px 8px',
-    borderRadius: 12,
-    letterSpacing: '0.5px'
+    border: '1px solid #ff4500',
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer'
+  },
+  modDrawer: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    backgroundColor: '#1e1f22',
+    border: '1px solid #343536',
+    borderRadius: 8,
+    padding: '8px 12px',
+    marginBottom: 12
+  },
+  modDrawerLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8
+  },
+  modDrawerActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap'
+  },
+  modActionBtn: {
+    backgroundColor: '#272729',
+    color: '#f8fafc',
+    border: '1px solid #3f3f46',
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
+  },
+  modActionBtnAccent: {
+    backgroundColor: '#0c4a6e',
+    color: '#38bdf8',
+    border: '1px solid #0284c7',
+    borderRadius: 6,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer'
   },
   visibilityPublicBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
     backgroundColor: '#064e3b',
     color: '#34d399',
     fontSize: 11,
     fontWeight: 700,
     padding: '2px 8px',
-    borderRadius: 12,
+    borderRadius: 10,
     border: '1px solid #059669'
   },
   visibilityPrivateBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
     backgroundColor: '#3b0764',
     color: '#d8b4fe',
     fontSize: 11,
     fontWeight: 700,
     padding: '2px 8px',
-    borderRadius: 12,
+    borderRadius: 10,
     border: '1px solid #7c3aed'
   },
-  syncBadge: {
+  filterBar: {
     display: 'flex',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 6,
-    fontSize: 11,
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10
+  },
+  groupPillsWrapper: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6
+  },
+  groupPill: {
+    backgroundColor: '#202022',
     color: '#94a3b8',
-    backgroundColor: '#1e293b',
-    padding: '3px 8px',
-    borderRadius: 12
-  },
-  pulseDot: {
-    width: 6,
-    height: 6,
-    backgroundColor: '#10b981',
-    borderRadius: '50%'
-  },
-  syncButton: {
-    backgroundColor: '#272729',
-    color: '#d7dadc',
-    border: '1px solid #343536',
-    borderRadius: 6,
-    padding: '5px 12px',
+    border: '1px solid #272729',
+    borderRadius: 16,
+    padding: '3px 10px',
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
+  },
+  groupPillActive: {
+    backgroundColor: '#ff4500',
+    color: '#ffffff',
+    border: '1px solid #ff4500',
+    borderRadius: 16,
+    padding: '3px 10px',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer'
+  },
+  searchInput: {
+    backgroundColor: '#0f1011',
+    border: '1px solid #272729',
+    borderRadius: 6,
+    padding: '4px 10px',
+    color: '#d7dadc',
+    fontSize: 12,
+    outline: 'none',
+    width: 160
+  },
+  leaderboardList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6
+  },
+  barRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '6px 10px',
+    backgroundColor: '#0f1011',
+    border: '1px solid #232426',
+    borderRadius: 8
+  },
+  rankGold: {
+    width: 26,
+    height: 24,
+    borderRadius: 999,
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    border: '1px solid rgba(245, 158, 11, 0.45)',
+    color: '#fbbf24',
+    fontSize: 12,
+    fontWeight: 700,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0
+  },
+  rankSilver: {
+    width: 26,
+    height: 24,
+    borderRadius: 999,
+    backgroundColor: 'rgba(148, 163, 184, 0.16)',
+    border: '1px solid rgba(148, 163, 184, 0.45)',
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: 700,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0
+  },
+  rankBronze: {
+    width: 26,
+    height: 24,
+    borderRadius: 999,
+    backgroundColor: 'rgba(217, 119, 6, 0.16)',
+    border: '1px solid rgba(217, 119, 6, 0.45)',
+    color: '#f59e0b',
+    fontSize: 12,
+    fontWeight: 700,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0
+  },
+  rankDefault: {
+    width: 26,
+    height: 24,
+    color: '#64748b',
+    fontSize: 12,
+    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0
+  },
+  flairCell: {
+    width: 135,
+    flexShrink: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  flairBadge: {
+    display: 'inline-block',
+    color: '#ffffff',
+    padding: '2px 8px',
+    borderRadius: 5,
+    fontSize: 12,
+    fontWeight: 600,
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap'
+  },
+  barTrackWrapper: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 140
+  },
+  barTrack: {
+    flex: 1,
+    height: 12,
+    backgroundColor: '#202124',
+    borderRadius: 999,
+    overflow: 'hidden'
+  },
+  barFill: {
+    height: '100%',
+    borderRadius: 999,
+    transition: 'width 0.3s ease'
+  },
+  metricReadout: {
+    width: 128,
+    textAlign: 'right',
+    fontWeight: 700,
+    fontSize: 12,
+    color: '#f8fafc',
+    flexShrink: 0
+  },
+  sampleCell: {
+    width: 72,
+    textAlign: 'right',
+    fontSize: 12,
+    color: '#64748b',
+    flexShrink: 0
+  },
+  benchmarkRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '3px 4px'
+  },
+  benchmarkLine: {
+    flex: 1,
+    borderTop: '1px dashed rgba(56, 189, 248, 0.45)'
+  },
+  benchmarkLabel: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#38bdf8',
+    whiteSpace: 'nowrap'
+  },
+  emptyStateBanner: {
+    padding: '28px 16px',
+    textAlign: 'center',
+    backgroundColor: '#0f1011',
+    border: '1px dashed #272729',
+    borderRadius: 8
   },
   buttonDisabled: {
     backgroundColor: '#1e293b',
@@ -1598,54 +1573,24 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     cursor: 'not-allowed'
   },
-  modBanner: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 10,
-    backgroundColor: '#1a1a1b',
-    border: '1px solid #343536',
-    borderLeft: '4px solid #ff4500',
-    borderRadius: 8,
-    padding: '8px 12px',
-    marginBottom: 10
-  },
-  modBannerInfo: {
-    fontSize: 12
-  },
-  modBannerActions: {
-    display: 'flex',
-    gap: 8
-  },
-  settingsButton: {
-    backgroundColor: '#272729',
-    color: '#f8fafc',
-    border: '1px solid #475569',
-    borderRadius: 6,
-    padding: '5px 12px',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer'
-  },
   secondaryButton: {
     backgroundColor: '#272729',
     color: '#d7dadc',
     border: '1px solid #343536',
     borderRadius: 6,
-    padding: '5px 12px',
+    padding: '6px 14px',
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
   },
-  sidebarButton: {
-    backgroundColor: '#1e293b',
-    color: '#38bdf8',
-    border: '1px solid #0284c7',
+  primaryButton: {
+    backgroundColor: '#ff4500',
+    color: '#ffffff',
+    border: 'none',
     borderRadius: 6,
-    padding: '5px 12px',
+    padding: '6px 14px',
     fontSize: 12,
-    fontWeight: 600,
+    fontWeight: 700,
     cursor: 'pointer'
   },
   syncWidgetButton: {
@@ -1659,11 +1604,11 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer'
   },
   sidebarSectionCard: {
-    backgroundColor: '#161b22',
-    border: '1px solid #30363d',
+    backgroundColor: '#121213',
+    border: '1px solid #272729',
     borderRadius: 8,
     padding: 14,
-    marginBottom: 14
+    marginBottom: 12
   },
   widgetResultSuccess: {
     marginTop: 10,
@@ -1692,8 +1637,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   copyInput: {
     flex: 1,
-    backgroundColor: '#0d1117',
-    border: '1px solid #30363d',
+    backgroundColor: '#0f1011',
+    border: '1px solid #272729',
     borderRadius: 6,
     padding: '6px 10px',
     color: '#cbd5e1',
@@ -1701,9 +1646,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace'
   },
   copyButton: {
-    backgroundColor: '#21262d',
-    border: '1px solid #30363d',
-    color: '#f0f6fc',
+    backgroundColor: '#272729',
+    border: '1px solid #343536',
+    color: '#f8fafc',
     borderRadius: 6,
     padding: '6px 12px',
     fontSize: 12,
@@ -1736,324 +1681,15 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     flexShrink: 0
   },
-  primaryButton: {
-    backgroundColor: '#ff4500',
-    color: '#ffffff',
-    border: 'none',
-    borderRadius: 6,
-    padding: '6px 14px',
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: 'pointer'
-  },
-  overviewCard: {
-    backgroundColor: '#1a1a1b',
-    border: '1px solid #343536',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12
-  },
-  overviewHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    marginBottom: 12
-  },
-  overviewIconBox: {
-    fontSize: 18,
-    backgroundColor: '#272729',
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  overviewCardTitle: {
-    fontSize: 15,
-    fontWeight: 700,
-    color: '#f8fafc'
-  },
-  overviewCardSubtitle: {
-    fontSize: 11,
-    color: '#818384',
-    marginTop: 2
-  },
-  overviewMetricsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-    gap: 10,
-    marginBottom: 12
-  },
-  overviewMetricBox: {
-    backgroundColor: '#121213',
-    border: '1px solid #272729',
-    borderRadius: 8,
-    padding: '10px 12px'
-  },
-  metricLabel: {
-    fontSize: 11,
-    color: '#818384',
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px'
-  },
-  metricValue: {
-    fontSize: 22,
-    fontWeight: 800,
-    marginTop: 4,
-    marginBottom: 2
-  },
-  metricUnit: {
-    fontSize: 12,
-    fontWeight: 500,
-    color: '#818384'
-  },
-  metricSub: {
-    fontSize: 11,
-    color: '#64748b'
-  },
-  rationaleBox: {
-    fontSize: 12,
-    color: '#94a3b8',
-    backgroundColor: '#121213',
-    border: '1px solid #272729',
-    borderRadius: 6,
-    padding: '8px 12px',
-    lineHeight: 1.45
-  },
-  groupSection: {
-    backgroundColor: '#1a1a1b',
-    border: '1px solid #343536',
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 20
-  },
-  groupTabsHeader: {
-    marginBottom: 8
-  },
-  groupPillsWrapper: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8
-  },
-  groupPill: {
-    backgroundColor: '#272729',
-    color: '#cbd5e1',
-    border: '1px solid #343536',
-    borderRadius: 20,
-    padding: '5px 14px',
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer'
-  },
-  groupPillActive: {
-    backgroundColor: '#ff4500',
-    color: '#ffffff',
-    border: '1px solid #ff4500',
-    borderRadius: 20,
-    padding: '5px 14px',
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: 'pointer'
-  },
-  activeGroupBox: {
-    marginTop: 12,
-    padding: '10px 14px',
-    backgroundColor: '#121213',
-    border: '1px solid #272729',
-    borderRadius: 8
-  },
-  activeGroupTopRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 12
-  },
-  activeGroupTitle: {
-    fontSize: 14,
-    fontWeight: 700,
-    color: '#f8fafc',
-    marginRight: 8
-  },
-  activeGroupSubtitle: {
-    fontSize: 12,
-    color: '#818384'
-  },
-  activeGroupStats: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 16
-  },
-  activeGroupStatItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    fontSize: 12
-  },
-  activeGroupStatLabel: {
-    color: '#818384'
-  },
-  activeGroupStatValue: {
-    fontWeight: 700,
-    color: '#f8fafc'
-  },
-  tableControls: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 12
-  },
-  flairCountBadge: {
-    fontSize: 13,
-    color: '#94a3b8'
-  },
-  filterActions: {
-    display: 'flex',
-    gap: 10,
-    flex: 1,
-    justifyContent: 'flex-end',
-    minWidth: 260
-  },
-  searchInput: {
-    backgroundColor: '#1a1a1b',
-    border: '1px solid #343536',
-    borderRadius: 6,
-    padding: '7px 12px',
-    color: '#d7dadc',
-    fontSize: 13,
-    outline: 'none',
-    width: 200
-  },
-  selectInput: {
-    backgroundColor: '#1a1a1b',
-    border: '1px solid #343536',
-    borderRadius: 6,
-    padding: '7px 12px',
-    color: '#d7dadc',
-    fontSize: 13,
-    outline: 'none',
-    cursor: 'pointer'
-  },
-  tableWrapper: {
-    backgroundColor: '#1a1a1b',
-    border: '1px solid #343536',
-    borderRadius: 10,
-    overflowX: 'auto',
-    marginBottom: 20
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    textAlign: 'left'
-  },
-  th: {
-    padding: '12px 16px',
-    fontSize: 11,
-    fontWeight: 700,
-    color: '#818384',
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-    borderBottom: '1px solid #272729',
-    backgroundColor: '#161617'
-  },
-  tr: {
-    borderBottom: '1px solid #272729'
-  },
-  td: {
-    padding: '12px 16px',
-    fontSize: 13,
-    color: '#d7dadc'
-  },
-  flairPill: {
-    display: 'inline-block',
-    backgroundColor: '#272729',
-    color: '#f8fafc',
-    padding: '3px 10px',
-    borderRadius: 12,
-    fontSize: 12,
-    fontWeight: 600,
-    border: '1px solid #343536'
-  },
-  assignedGroupBadge: {
-    display: 'inline-block',
-    marginLeft: 8,
-    fontSize: 10,
-    color: '#94a3b8',
-    backgroundColor: '#1e293b',
-    padding: '2px 6px',
-    borderRadius: 4,
-    border: '1px solid #334155'
-  },
-  percentageText: {
-    fontSize: 11,
-    color: '#64748b',
-    fontWeight: 400
-  },
-  barContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    width: '100%'
-  },
-  barFill: {
-    height: 8,
-    borderRadius: 4,
-    minWidth: 4,
-    transition: 'width 0.3s ease'
-  },
-  barNumber: {
-    fontSize: 12,
-    fontWeight: 700,
-    color: '#f8fafc',
-    minWidth: 32
-  },
-  deltaPositive: {
-    display: 'inline-block',
-    backgroundColor: '#064e3b',
-    color: '#34d399',
-    padding: '2px 8px',
-    borderRadius: 6,
-    fontSize: 12,
-    fontWeight: 700
-  },
-  deltaNegative: {
-    display: 'inline-block',
-    backgroundColor: '#450a0a',
-    color: '#f87171',
-    padding: '2px 8px',
-    borderRadius: 6,
-    fontSize: 12,
-    fontWeight: 700
-  },
-  deltaNeutral: {
-    color: '#94a3b8',
-    fontSize: 12
-  },
-  emptyRow: {
-    padding: 32,
-    textAlign: 'center',
-    color: '#818384'
-  },
-  footer: {
-    fontSize: 11,
-    color: '#64748b',
-    textAlign: 'center',
-    marginTop: 20,
-    marginBottom: 40
-  },
   toast: {
     position: 'fixed',
-    bottom: 24,
-    right: 24,
+    bottom: 20,
+    right: 20,
     backgroundColor: '#ff4500',
     color: '#ffffff',
-    padding: '12px 20px',
+    padding: '10px 16px',
     borderRadius: 8,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 600,
     boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
     zIndex: 9999
@@ -2076,7 +1712,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #343536',
     borderRadius: 12,
     width: '100%',
-    maxWidth: 620,
+    maxWidth: 580,
     maxHeight: '90vh',
     display: 'flex',
     flexDirection: 'column',
@@ -2086,7 +1722,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    padding: '18px 20px',
+    padding: '16px 20px',
     borderBottom: '1px solid #272729'
   },
   closeButton: {
@@ -2098,14 +1734,22 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 4
   },
   modalBody: {
-    padding: 20,
+    padding: 18,
     overflowY: 'auto'
+  },
+  modalFooter: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 10,
+    padding: '12px 20px',
+    borderTop: '1px solid #272729',
+    backgroundColor: '#141415'
   },
   formRow: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: 14,
-    marginBottom: 16
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+    gap: 12,
+    marginBottom: 14
   },
   formField: {
     display: 'flex',
@@ -2113,25 +1757,24 @@ const styles: Record<string, React.CSSProperties> = {
   },
   formGroup: {
     display: 'flex',
-    flexDirection: 'column',
-    marginBottom: 16
+    flexDirection: 'column'
   },
   visibilityCard: {
     backgroundColor: '#121213',
     border: '1px solid #272729',
     borderRadius: 8,
-    padding: '12px 14px',
-    marginBottom: 16
+    padding: '10px 12px',
+    marginBottom: 12
   },
   checkboxLabel: {
     display: 'flex',
     alignItems: 'flex-start',
-    gap: 12,
+    gap: 10,
     cursor: 'pointer'
   },
   checkboxInput: {
-    width: 18,
-    height: 18,
+    width: 16,
+    height: 16,
     marginTop: 2,
     cursor: 'pointer',
     accentColor: '#ff4500'
@@ -2140,183 +1783,109 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     fontWeight: 700,
     color: '#f8fafc',
-    marginBottom: 6
+    marginBottom: 4
   },
   textInput: {
     backgroundColor: '#121213',
     border: '1px solid #343536',
     borderRadius: 6,
-    padding: '8px 12px',
+    padding: '6px 10px',
     color: '#f8fafc',
-    fontSize: 13,
-    outline: 'none'
+    fontSize: 13
   },
   textInputError: {
-    backgroundColor: '#2a0e0e',
+    backgroundColor: '#450a0a33',
     border: '1px solid #ef4444',
     borderRadius: 6,
-    padding: '8px 12px',
-    color: '#fca5a5',
-    fontSize: 13,
-    outline: 'none'
-  },
-  errorNotice: {
-    backgroundColor: '#450a0a',
-    border: '1px solid #dc2626',
-    borderRadius: 6,
     padding: '6px 10px',
-    color: '#fca5a5',
-    fontSize: 11,
-    marginTop: 6,
-    lineHeight: 1.4
-  },
-  warningNotice: {
-    backgroundColor: '#451a03',
-    border: '1px solid #d97706',
-    borderRadius: 6,
-    padding: '6px 10px',
-    color: '#fcd34d',
-    fontSize: 11,
-    marginTop: 6,
-    lineHeight: 1.4
-  },
-  constraintsCard: {
-    backgroundColor: '#0f172a',
-    border: '1px solid #1e293b',
-    borderLeft: '4px solid #ef4444',
-    borderRadius: 8,
-    padding: '12px 14px',
-    marginTop: 14,
-    marginBottom: 14
-  },
-  constraintsHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8
-  },
-  constraintList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6
-  },
-  constraintItem: {
-    fontSize: 11,
-    lineHeight: 1.45
-  },
-  settingsTextarea: {
-    backgroundColor: '#121213',
-    border: '1px solid #343536',
-    borderRadius: 6,
-    padding: 12,
     color: '#f8fafc',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    outline: 'none',
-    resize: 'vertical'
+    fontSize: 13
   },
   helpText: {
     fontSize: 11,
-    color: '#818384',
+    color: '#64748b',
     marginTop: 4
   },
-  tinyButton: {
+  textareaInput: {
+    backgroundColor: '#121213',
+    border: '1px solid #343536',
+    borderRadius: 6,
+    padding: '8px 10px',
+    color: '#f8fafc',
+    fontSize: 12,
+    fontFamily: 'monospace',
+    resize: 'vertical'
+  },
+  templateBtn: {
     backgroundColor: '#272729',
-    color: '#94a3b8',
+    color: '#cbd5e1',
     border: '1px solid #343536',
     borderRadius: 4,
     padding: '3px 8px',
     fontSize: 11,
     cursor: 'pointer'
   },
-  tinyButtonPrimary: {
-    backgroundColor: '#0369a1',
-    color: '#f8fafc',
-    border: '1px solid #0284c7',
-    borderRadius: 4,
-    padding: '3px 10px',
-    fontSize: 11,
-    fontWeight: 700,
-    cursor: 'pointer'
-  },
-  flairChipsBox: {
-    marginTop: 8,
-    padding: '10px 12px',
-    backgroundColor: '#121213',
-    border: '1px solid #272729',
-    borderRadius: 6
-  },
-  flairChipsHeader: {
-    marginBottom: 6
-  },
-  flairChipsGrid: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 6
-  },
-  flairChip: {
-    backgroundColor: '#1e293b',
+  templateBtnAccent: {
+    backgroundColor: '#0284c722',
     color: '#38bdf8',
     border: '1px solid #0284c7',
-    borderRadius: 14,
-    padding: '3px 10px',
+    borderRadius: 4,
+    padding: '3px 8px',
     fontSize: 11,
     fontWeight: 600,
     cursor: 'pointer'
   },
-  nativeSettingsNotice: {
-    fontSize: 12,
-    color: '#94a3b8',
+  flairPickerBox: {
     backgroundColor: '#121213',
-    border: '1px solid #1e293b',
+    border: '1px solid #272729',
     borderRadius: 6,
-    padding: '10px 12px',
-    lineHeight: 1.4
+    padding: 8,
+    marginBottom: 8
+  },
+  flairChipBtn: {
+    backgroundColor: '#272729',
+    color: '#e2e8f0',
+    border: '1px solid #3f3f46',
+    borderRadius: 12,
+    padding: '2px 8px',
+    fontSize: 11,
+    cursor: 'pointer'
   },
   modalFormatTabs: {
     display: 'flex',
-    borderBottom: '1px solid #272729',
-    padding: '0 20px'
+    gap: 8,
+    padding: '12px 20px 0'
   },
   modalTab: {
-    backgroundColor: 'transparent',
+    backgroundColor: '#272729',
+    color: '#94a3b8',
     border: 'none',
-    borderBottom: '2px solid transparent',
-    color: '#818384',
-    padding: '10px 16px',
-    fontSize: 13,
+    borderRadius: 6,
+    padding: '6px 12px',
+    fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer'
   },
   modalTabActive: {
-    backgroundColor: 'transparent',
+    backgroundColor: '#ff4500',
+    color: '#ffffff',
     border: 'none',
-    borderBottom: '2px solid #ff4500',
-    color: '#f8fafc',
-    padding: '10px 16px',
-    fontSize: 13,
+    borderRadius: 6,
+    padding: '6px 12px',
+    fontSize: 12,
     fontWeight: 700,
     cursor: 'pointer'
   },
   modalTextarea: {
-    flex: 1,
-    minHeight: 280,
-    margin: 20,
-    padding: 14,
-    backgroundColor: '#121213',
+    margin: '12px 20px',
+    height: 220,
+    backgroundColor: '#0f1011',
     border: '1px solid #272729',
-    borderRadius: 8,
-    color: '#f8fafc',
+    borderRadius: 6,
+    padding: 10,
+    color: '#cbd5e1',
     fontSize: 12,
     fontFamily: 'monospace',
-    resize: 'none',
-    outline: 'none'
-  },
-  modalFooter: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: 10,
-    padding: '16px 20px',
-    borderTop: '1px solid #272729'
+    resize: 'none'
   }
 };
